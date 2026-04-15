@@ -1,0 +1,82 @@
+[
+  {
+    "id": "soil-clay",
+    "title": "Clay Soil Basics",
+    "category": "soil_type",
+    "keywords": ["clay", "heavy soil", "water retention", "drainage", "compaction"],
+    "content": "Clay can hold water and nutrients well, but it drains slowly and can compact easily. Avoid working the field when it is too wet, add compost or manure to improve structure, and keep drainage channels open.",
+    "related_soil_types": ["Clay"]
+  },
+  {
+    "id": "soil-clay-loam",
+    "title": "Clay Loam Soil Basics",
+    "category": "soil_type",
+    "keywords": ["clay loam", "balanced soil", "fertility", "drainage", "field condition"],
+    "content": "Clay loam usually balances moisture holding and root support better than heavy clay. It still needs good drainage and regular organic matter so the soil stays loose and easy for roots to grow through.",
+    "related_soil_types": ["Clay Loam"]
+  },
+  {
+    "id": "soil-loam",
+    "title": "Loam Soil Basics",
+    "category": "soil_type",
+    "keywords": ["loam", "good structure", "aeration", "drainage", "general farming"],
+    "content": "Loam is usually easier to manage because it has good drainage, airflow, and nutrient holding capacity. Keep crop residues or mulch on the surface and rotate crops so the soil stays productive.",
+    "related_soil_types": ["Loam"]
+  },
+  {
+    "id": "soil-silty-clay",
+    "title": "Silty Clay Soil Basics",
+    "category": "soil_type",
+    "keywords": ["silty clay", "waterlogging", "surface sealing", "erosion", "root stress"],
+    "content": "Silty clay can stay wet for long periods and may seal on the surface after heavy rain. Improve drainage, reduce foot traffic when the field is wet, and use mulch to protect the topsoil.",
+    "related_soil_types": ["Silty Clay"]
+  },
+  {
+    "id": "soil-rock-land",
+    "title": "Rock Land Soil Basics",
+    "category": "soil_type",
+    "keywords": ["rock land", "shallow soil", "low water holding", "stony field", "limited rooting"],
+    "content": "Rock Land often has shallow soil depth and lower water holding capacity. Choose hardy crops, use spot planting where soil is deeper, and conserve moisture with mulch or ground cover.",
+    "related_soil_types": ["Rock Land"]
+  },
+  {
+    "id": "crop-recommendation-guidance",
+    "title": "How To Read Crop Recommendations",
+    "category": "crop_recommendation",
+    "keywords": ["crop recommendation", "suitability", "high", "medium", "low", "matching crops"],
+    "content": "Use high-suitability crops as the first option for the soil type in your field. Medium-suitability crops may still perform well with better drainage, moisture control, or fertilizer management, while low-suitability crops carry higher production risk.",
+    "related_soil_types": ["Clay", "Clay Loam", "Loam", "Silty Clay", "Rock Land"]
+  },
+  {
+    "id": "fertilizer-guidance-basic",
+    "title": "Basic Fertilizer Guidance",
+    "category": "fertilizer_guidance",
+    "keywords": ["fertilizer", "split application", "organic matter", "soil test", "crop demand"],
+    "content": "Apply fertilizer based on crop need and soil condition, and use split application instead of one heavy dose when possible. Do not spray or spread fertilizer before strong rain, and add compost or manure to help maintain long-term soil fertility.",
+    "related_soil_types": ["Clay", "Clay Loam", "Loam", "Silty Clay", "Rock Land"]
+  },
+  {
+    "id": "soil-management-advice",
+    "title": "Basic Soil Management Advice",
+    "category": "soil_management",
+    "keywords": ["soil management", "mulch", "drainage", "organic matter", "erosion control"],
+    "content": "Keep the soil covered with mulch, crop residue, or living cover whenever possible. Maintain drainage paths, avoid repeated tillage on wet soil, and add organic matter regularly to improve structure and reduce erosion.",
+    "related_soil_types": ["Clay", "Clay Loam", "Loam", "Silty Clay", "Rock Land"]
+  },
+  {
+    "id": "planting-climate-advice",
+    "title": "Planting And Climate Advice",
+    "category": "planting_climate",
+    "keywords": ["planting", "rain", "heat", "wind", "fieldwork", "climate advisory"],
+    "content": "Schedule planting and fieldwork with weather conditions in mind. Delay fertilizer spraying when heavy rain is likely, check drainage in low areas during wet periods, and protect seedlings when strong wind or high daytime heat is expected.",
+    "related_soil_types": ["Clay", "Clay Loam", "Loam", "Silty Clay", "Rock Land"]
+  },
+  {
+    "id": "productivity-guidance-basic",
+    "title": "Basic Productivity Guidance",
+    "category": "productivity",
+    "keywords": ["productivity", "yield records", "field notes", "crop performance", "farm decisions"],
+    "content": "Track the soil type, crop name, planted area, and harvest yield for every field or season. Simple records help farmers compare which crops perform better on each soil type and improve the next planting decision.",
+    "related_soil_types": ["Clay", "Clay Loam", "Loam", "Silty Clay", "Rock Land"]
+  }
+]

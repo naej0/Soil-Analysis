@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+psycopg2-binary
+requests
+python-multipart
+Pillow
+passlib
+email-validator
+numpy
+matplotlib
+seaborn
+scikit-learn
+tensorflow
