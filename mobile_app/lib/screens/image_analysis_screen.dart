@@ -30,16 +30,24 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
   static const int _initialVisibleRecommendationCount = 6;
 
   final ImagePicker _picker = ImagePicker();
+
   File? _selectedImage;
   AiUploadResponse? _uploadResponse;
   AiPredictionResponse? _predictionResponse;
   SoilAnalysisSupportResponse? _soilAnalysisSupport;
+
+  Map<String, dynamic>? _cropRecommendationsPayload;
   List<RecommendationItem> _recommendations = const [];
+
   bool _isBusy = false;
+  bool _isCropRecommendationsLoading = false;
+  bool _isUsingCropRecommendationFallback = false;
   bool _showAllRecommendations = false;
   bool _showLongWaitMessage = false;
+
   String? _supportErrorMessage;
   String? _recommendationsErrorMessage;
+
   Timer? _longWaitTimer;
   _AnalysisStage _analysisStage = _AnalysisStage.idle;
 
@@ -65,6 +73,7 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
         maxWidth: 1600,
         maxHeight: 1600,
       );
+
       if (pickedFile == null) {
         return;
       }
@@ -81,7 +90,10 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
         _uploadResponse = null;
         _predictionResponse = null;
         _soilAnalysisSupport = null;
+        _cropRecommendationsPayload = null;
         _recommendations = const [];
+        _isCropRecommendationsLoading = false;
+        _isUsingCropRecommendationFallback = false;
         _showAllRecommendations = false;
         _showLongWaitMessage = false;
         _supportErrorMessage = null;
@@ -116,18 +128,20 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
       _uploadResponse = null;
       _predictionResponse = null;
       _soilAnalysisSupport = null;
+      _cropRecommendationsPayload = null;
       _recommendations = const [];
+      _isCropRecommendationsLoading = false;
+      _isUsingCropRecommendationFallback = false;
       _showAllRecommendations = false;
       _supportErrorMessage = null;
       _recommendationsErrorMessage = null;
     });
+
     _startLongWaitTimer();
 
     try {
       final upload = await widget.apiService.uploadSoilImage(image);
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         _uploadResponse = upload;
@@ -135,72 +149,64 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
       });
 
       final prediction = await widget.apiService.predictSoil(
-  fileName: upload.fileName,
-  userId: null, // replace later with currentUser.id if available
-  originalFileName: upload.originalFileName,
-  lat: null,
-  lng: null,
-  barangay: null,
-  soilName: null,
-);
-      if (!mounted) {
-        return;
-      }
+        fileName: upload.fileName,
+        userId: null,
+        originalFileName: upload.originalFileName,
+        lat: null,
+        lng: null,
+        barangay: null,
+        soilName: null,
+      );
+      if (!mounted) return;
+
+      final predictedSoil = prediction.prediction?.trim();
+      final hasPredictedSoil =
+          predictedSoil != null && predictedSoil.isNotEmpty;
+
+      final cropRecommendationsFuture = hasPredictedSoil
+          ? widget.apiService.getCropRecommendationsBySoilType(predictedSoil)
+          : null;
 
       setState(() {
         _predictionResponse = prediction;
         _analysisStage = _AnalysisStage.preparingAdvice;
+        _cropRecommendationsPayload = null;
+        _isCropRecommendationsLoading = hasPredictedSoil;
+        _isUsingCropRecommendationFallback = false;
       });
 
       SoilAnalysisSupportResponse? supportResponse;
-      List<RecommendationItem> recommendations = const [];
       String? supportErrorMessage;
-      String? recommendationsErrorMessage;
-      final predictedSoil = prediction.prediction?.trim();
-      if (predictedSoil != null && predictedSoil.isNotEmpty) {
+
+      if (hasPredictedSoil) {
         try {
           supportResponse = await widget.apiService.fetchSoilAnalysisSupport(
             predictedSoil,
           );
-          recommendations = supportResponse.recommendedCrops
-              .map(
-                (item) => RecommendationItem(
-                  cropName: item.cropName,
-                  suitability: item.suitability,
-                  notes: item.notes,
-                ),
-              )
-              .toList();
         } on ApiException catch (error) {
           supportErrorMessage = _buildSupportErrorMessage(error.message);
         }
-
-        if (recommendations.isEmpty) {
-          try {
-            recommendations =
-                await widget.apiService.getRecommendationsBySoil(predictedSoil);
-          } on ApiException catch (error) {
-            recommendationsErrorMessage =
-                _buildRecommendationErrorMessage(error.message);
-          }
-        }
       }
 
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
 
       setState(() {
         _soilAnalysisSupport = supportResponse;
-        _recommendations = recommendations;
         _supportErrorMessage = supportErrorMessage;
-        _recommendationsErrorMessage = recommendationsErrorMessage;
         _analysisStage = _AnalysisStage.completed;
       });
-    } on ApiException catch (error) {
-      if (!mounted) {
-        return;
+
+      if (hasPredictedSoil) {
+        unawaited(
+          _loadCropRecommendationsForSoil(
+            predictedSoil,
+            supportFallback: supportResponse,
+            backendFuture: cropRecommendationsFuture,
+          ),
+        );
       }
+    } on ApiException catch (error) {
+      if (!mounted) return;
       _showMessage(
         _buildAnalysisErrorMessage(
           error.message,
@@ -208,9 +214,7 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
         ),
       );
     } catch (_) {
-      if (!mounted) {
-        return;
-      }
+      if (!mounted) return;
       _showMessage(
         _buildAnalysisErrorMessage(
           'Image analysis could not be completed right now. Please try again.',
@@ -248,9 +252,8 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
   }
 
   void _showMessage(String message) {
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -267,9 +270,7 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
   void _startLongWaitTimer() {
     _stopLongWaitTimer();
     _longWaitTimer = Timer(const Duration(seconds: 8), () {
-      if (!mounted || !_isBusy) {
-        return;
-      }
+      if (!mounted || !_isBusy) return;
       setState(() {
         _showLongWaitMessage = true;
       });
@@ -289,6 +290,7 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
     final preservedCharacters = maxLength - 3;
     final startLength = (preservedCharacters / 2).ceil();
     final endLength = preservedCharacters - startLength;
+
     return '${value.substring(0, startLength)}...${value.substring(value.length - endLength)}';
   }
 
@@ -374,20 +376,147 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
 
   String _buildRecommendationErrorMessage(String message) {
     final normalized = message.toLowerCase();
+
     if (normalized.contains('could not connect to backend') ||
         normalized.contains('network request failed')) {
       return 'The soil type is ready, but we could not load the crop advice right now. Please try again in a moment.';
     }
+
     return 'The soil type is ready, but crop advice is not available right now.';
   }
 
   String _buildSupportErrorMessage(String message) {
     final normalized = message.toLowerCase();
+
     if (normalized.contains('could not connect to backend') ||
         normalized.contains('network request failed')) {
       return 'The soil type is ready, but detailed soil support could not be loaded right now. Showing general guidance where available.';
     }
+
     return 'The soil type is ready, but detailed soil support is not available right now. Showing general guidance where available.';
+  }
+
+  bool _matchesCurrentPredictedSoil(String soilType) {
+    return _predictionResponse?.prediction?.trim() == soilType;
+  }
+
+  List<RecommendationItem> _mapBackendRecommendationItems(dynamic value) {
+    final items = value as List? ?? const [];
+
+    return items
+        .map(
+          (item) => RecommendationItem.fromJson(
+            Map<String, dynamic>.from(item as Map),
+          ),
+        )
+        .where((item) => item.cropName.trim().isNotEmpty)
+        .toList();
+  }
+
+  List<RecommendationItem> _mapSupportRecommendationItems(
+    SoilAnalysisSupportResponse? support,
+  ) {
+    return (support?.recommendedCrops ?? const <RecommendedCrop>[])
+        .map(
+          (item) => RecommendationItem(
+            cropName: item.cropName,
+            suitability: item.suitability,
+            notes: item.notes,
+          ),
+        )
+        .toList();
+  }
+
+  Future<_CropRecommendationResult> _loadFallbackCropRecommendations(
+    String soilType, {
+    SoilAnalysisSupportResponse? supportFallback,
+  }) async {
+    final supportRecommendations =
+        _mapSupportRecommendationItems(supportFallback);
+
+    if (supportRecommendations.isNotEmpty) {
+      return _CropRecommendationResult(
+        recommendations: supportRecommendations,
+        isUsingFallback: true,
+      );
+    }
+
+    try {
+      final recommendations =
+          await widget.apiService.getRecommendationsBySoil(soilType);
+
+      return _CropRecommendationResult(
+        recommendations: recommendations,
+        isUsingFallback: true,
+      );
+    } on ApiException catch (error) {
+      return _CropRecommendationResult(
+        recommendations: const [],
+        isUsingFallback: true,
+        errorMessage: _buildRecommendationErrorMessage(error.message),
+      );
+    }
+  }
+
+  Future<void> _loadCropRecommendationsForSoil(
+    String soilType, {
+    SoilAnalysisSupportResponse? supportFallback,
+    Future<Map<String, dynamic>>? backendFuture,
+  }) async {
+    Map<String, dynamic>? cropRecommendationsPayload;
+    List<RecommendationItem> recommendations = const [];
+    String? recommendationsErrorMessage;
+    var isUsingFallback = false;
+
+    try {
+      final payload = await (backendFuture ??
+          widget.apiService.getCropRecommendationsBySoilType(soilType));
+
+      final backendRecommendations =
+          _mapBackendRecommendationItems(payload['recommendations']);
+
+      if (backendRecommendations.isNotEmpty) {
+        cropRecommendationsPayload = payload;
+        recommendations = backendRecommendations;
+      } else {
+        final fallback = await _loadFallbackCropRecommendations(
+          soilType,
+          supportFallback: supportFallback,
+        );
+        recommendations = fallback.recommendations;
+        recommendationsErrorMessage = fallback.errorMessage;
+        isUsingFallback = fallback.isUsingFallback;
+      }
+    } on ApiException {
+      final fallback = await _loadFallbackCropRecommendations(
+        soilType,
+        supportFallback: supportFallback,
+      );
+      recommendations = fallback.recommendations;
+      recommendationsErrorMessage = fallback.errorMessage;
+      isUsingFallback = fallback.isUsingFallback;
+    } catch (_) {
+      final fallback = await _loadFallbackCropRecommendations(
+        soilType,
+        supportFallback: supportFallback,
+      );
+      recommendations = fallback.recommendations;
+      recommendationsErrorMessage = fallback.errorMessage;
+      isUsingFallback = fallback.isUsingFallback;
+    }
+
+    if (!mounted || !_matchesCurrentPredictedSoil(soilType)) {
+      return;
+    }
+
+    setState(() {
+      _cropRecommendationsPayload = cropRecommendationsPayload;
+      _recommendations = recommendations;
+      _recommendationsErrorMessage = recommendationsErrorMessage;
+      _isCropRecommendationsLoading = false;
+      _isUsingCropRecommendationFallback = isUsingFallback;
+      _showAllRecommendations = false;
+    });
   }
 
   String? _firstNonEmptyText(Iterable<String?> values) {
@@ -432,6 +561,7 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
     }
 
     final insights = <String>[];
+
     if ((basis.nutrientRetention ?? '').isNotEmpty) {
       insights.add('Nutrient retention: ${basis.nutrientRetention}.');
     }
@@ -457,8 +587,7 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
     _SoilDecisionSupport? fallback,
   ) {
     final firstGuidance = _firstNonEmptyText(
-      (support?.fertilizerRecommendations ??
-              const <FertilizerRecommendation>[])
+      (support?.fertilizerRecommendations ?? const <FertilizerRecommendation>[])
           .map((item) => item.guidanceText),
     );
 
@@ -473,7 +602,9 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
     );
   }
 
-  String _fertilizerRecommendationTitle(FertilizerRecommendation recommendation) {
+  String _fertilizerRecommendationTitle(
+    FertilizerRecommendation recommendation,
+  ) {
     final label = recommendation.displayLabel?.trim() ?? '';
     if (label.isNotEmpty) {
       return label;
@@ -546,11 +677,11 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
         );
       case 'clay loam':
         return const _SoilDecisionSupport(
-          productivityLevel: 'High',
+          productivityLevel: 'Moderate',
           productivityExplanation:
-              'Clay loam often supports strong crop growth because it balances water retention, fertility, and structure.',
+              'Clay loam provides better balance than heavy clay, but some drainage and compaction sensitivity can still limit field performance.',
           fertilizerRecommendation:
-              'Apply a balanced NPK program based on crop demand and maintain fertility with compost or manure.',
+              'Apply a balanced NPK program and maintain soil organic matter to support structure and nutrient availability.',
           managementAdvice:
               'Preserve organic matter, avoid repeated compaction, and monitor moisture before field operations.',
         );
@@ -926,8 +1057,9 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                   height: 18,
                   child: CircularProgressIndicator(
                     strokeWidth: 2,
-                    valueColor:
-                        AlwaysStoppedAnimation<Color>(colorScheme.onPrimary),
+                    valueColor: AlwaysStoppedAnimation<Color>(
+                      colorScheme.onPrimary,
+                    ),
                   ),
                 ),
                 const SizedBox(width: 10),
@@ -986,38 +1118,100 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
     );
   }
 
+  Widget _buildCropRecommendationLoadingState(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withOpacity(0.32),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: colorScheme.outline.withOpacity(0.1),
+        ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 18,
+            height: 18,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              'Loading crop recommendations for the final soil type...',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final prediction = _predictionResponse;
     final support = _soilAnalysisSupport;
     final productivityBasis = support?.productivityBasis;
-    final fertilizerRecommendations =
-        support?.fertilizerRecommendations ??
-            const <FertilizerRecommendation>[];
+    final fertilizerRecommendations = support?.fertilizerRecommendations ??
+        const <FertilizerRecommendation>[];
+
     final finalSoilType = prediction?.prediction?.trim() ?? '';
     final hasFinalSoilType = finalSoilType.isNotEmpty;
+
     final confidenceLabel = _formatPercent(
       prediction?.confidence,
       fractionDigits: 1,
     );
-    final decisionSupport = _decisionSupportForPrediction(prediction?.prediction);
-    final productivityLevel =
-        productivityBasis?.productivityLevel ?? decisionSupport?.productivityLevel;
+
+    final decisionSupport = _decisionSupportForPrediction(
+      prediction?.prediction,
+    );
+
+    final productivityLevel = productivityBasis?.productivityLevel ??
+        decisionSupport?.productivityLevel;
+
     final productivityExplanation = productivityBasis?.basisExplanation ??
         decisionSupport?.productivityExplanation;
-    final managementAdvice = _buildManagementAdvice(support, decisionSupport);
+
+    final managementAdvice = _buildManagementAdvice(
+      support,
+      decisionSupport,
+    );
+
     final showSupportFallbackNotice =
         _supportErrorMessage != null && support == null;
+
+    final hasBackendCropRecommendations = _cropRecommendationsPayload != null;
+
     final hasHiddenRecommendations =
         _recommendations.length > _initialVisibleRecommendationCount;
-    final visibleRecommendations =
-        _showAllRecommendations || !hasHiddenRecommendations
-            ? _recommendations
-            : _recommendations.take(_initialVisibleRecommendationCount).toList();
+
+    final visibleRecommendations = _showAllRecommendations ||
+            !hasHiddenRecommendations
+        ? _recommendations
+        : _recommendations.take(_initialVisibleRecommendationCount).toList();
+
     final remainingRecommendationCount =
         _recommendations.length - visibleRecommendations.length;
+
     final isPreparingAdvice =
         _isBusy && _analysisStage == _AnalysisStage.preparingAdvice;
+
+    final isCropRecommendationsLoading =
+        !isPreparingAdvice && _isCropRecommendationsLoading;
+
+    final cropRecommendationDescription = hasBackendCropRecommendations ||
+            !_isUsingCropRecommendationFallback
+        ? 'These crop suggestions are matched to the final soil type.'
+        : 'These crop suggestions are matched to the final soil type using the available recommendation data.';
 
     return Scaffold(
       appBar: AppBar(title: const Text('Soil Image Analysis')),
@@ -1046,7 +1240,9 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                       Container(
                         height: 180,
                         decoration: BoxDecoration(
-                          color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                          color: Theme.of(context)
+                              .colorScheme
+                              .surfaceContainerHighest,
                           borderRadius: BorderRadius.circular(12),
                         ),
                         child: const Center(
@@ -1057,20 +1253,24 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                     Text(
                       'Select or capture a clear soil photo, then review the final soil type and field guidance.',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                     ),
                     const SizedBox(height: 16),
                     CustomButton(
                       label: 'Choose from Gallery',
                       icon: Icons.photo_library_outlined,
-                      onPressed: _isBusy ? null : () => _pickImage(ImageSource.gallery),
+                      onPressed: _isBusy
+                          ? null
+                          : () => _pickImage(ImageSource.gallery),
                     ),
                     const SizedBox(height: 12),
                     CustomButton(
                       label: 'Capture with Camera',
                       icon: Icons.camera_alt_outlined,
-                      onPressed: _isBusy ? null : () => _pickImage(ImageSource.camera),
+                      onPressed:
+                          _isBusy ? null : () => _pickImage(ImageSource.camera),
                     ),
                     const SizedBox(height: 12),
                     _buildAnalyzeButton(context),
@@ -1096,8 +1296,9 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                       Text(
                         'The guidance below is based on this final soil type only.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color:
-                                  Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                       ),
                     ],
@@ -1118,18 +1319,26 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              'These crop suggestions are matched to the final soil type.',
-                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                    color:
-                                        Theme.of(context).colorScheme.onSurfaceVariant,
+                              cropRecommendationDescription,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
                             ),
                             const SizedBox(height: 12),
-                            if (_recommendationsErrorMessage != null)
+                            if (isCropRecommendationsLoading)
+                              _buildCropRecommendationLoadingState(context)
+                            else if (_recommendationsErrorMessage != null)
                               Text(
                                 _recommendationsErrorMessage!,
                                 style: TextStyle(
-                                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .onSurfaceVariant,
                                 ),
                               )
                             else if (_recommendations.isEmpty)
@@ -1172,10 +1381,13 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                                         ),
                                   ),
                                 ),
-                              ...visibleRecommendations
-                                  .map((item) => RecommendationCard(recommendation: item))
-                                  ,
-                              if (hasHiddenRecommendations || _showAllRecommendations)
+                              ...visibleRecommendations.map(
+                                (item) => RecommendationCard(
+                                  recommendation: item,
+                                ),
+                              ),
+                              if (hasHiddenRecommendations ||
+                                  _showAllRecommendations)
                                 Align(
                                   alignment: Alignment.centerLeft,
                                   child: TextButton.icon(
@@ -1202,7 +1414,8 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                         ),
                 ),
               if (prediction != null &&
-                  ((productivityLevel?.isNotEmpty ?? false) || isPreparingAdvice))
+                  ((productivityLevel?.isNotEmpty ?? false) ||
+                      isPreparingAdvice))
                 InfoCard(
                   title: 'Estimated Soil Productivity',
                   icon: Icons.bar_chart_outlined,
@@ -1286,7 +1499,8 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     for (var index = 0;
-                                        index < fertilizerRecommendations.length;
+                                        index <
+                                            fertilizerRecommendations.length;
                                         index++) ...[
                                       _buildGuidanceText(
                                         context,
@@ -1334,7 +1548,9 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                 Card(
                   margin: const EdgeInsets.only(bottom: 16),
                   child: Theme(
-                    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                    data: Theme.of(context).copyWith(
+                      dividerColor: Colors.transparent,
+                    ),
                     child: ExpansionTile(
                       initiallyExpanded: false,
                       leading: Icon(
@@ -1345,14 +1561,22 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                       subtitle: const Text(
                         'Tap to view upload and prediction details',
                       ),
-                      childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                      childrenPadding: const EdgeInsets.fromLTRB(
+                        16,
+                        0,
+                        16,
+                        16,
+                      ),
                       children: [
                         if (_uploadResponse != null) ...[
                           Align(
                             alignment: Alignment.centerLeft,
                             child: Text(
                               'Upload Details',
-                              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleSmall
+                                  ?.copyWith(
                                     fontWeight: FontWeight.w700,
                                   ),
                             ),
@@ -1374,7 +1598,10 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                           alignment: Alignment.centerLeft,
                           child: Text(
                             'Top Predictions',
-                            style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            style: Theme.of(context)
+                                .textTheme
+                                .titleSmall
+                                ?.copyWith(
                                   fontWeight: FontWeight.w700,
                                 ),
                           ),
@@ -1383,7 +1610,9 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
                         if (prediction.topPredictions.isEmpty)
                           const Align(
                             alignment: Alignment.centerLeft,
-                            child: Text('No technical prediction breakdown is available.'),
+                            child: Text(
+                              'No technical prediction breakdown is available.',
+                            ),
                           )
                         else
                           ...prediction.topPredictions.map(
@@ -1459,6 +1688,18 @@ class _SoilDecisionSupport {
   final String productivityExplanation;
   final String fertilizerRecommendation;
   final String managementAdvice;
+}
+
+class _CropRecommendationResult {
+  const _CropRecommendationResult({
+    required this.recommendations,
+    required this.isUsingFallback,
+    this.errorMessage,
+  });
+
+  final List<RecommendationItem> recommendations;
+  final bool isUsingFallback;
+  final String? errorMessage;
 }
 
 enum _AnalysisStage {

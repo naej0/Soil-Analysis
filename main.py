@@ -160,27 +160,6 @@ def fetch_soil_productivity_basis(cursor, soil_type: str):
     return cursor.fetchone()
 
 
-def fetch_crop_recommendations_for_soil(cursor, soil_type: str):
-    query = """
-    SELECT
-        crop_name,
-        suitability,
-        notes
-    FROM crop_recommendations
-    WHERE LOWER(soil_type) = LOWER(%s)
-    ORDER BY
-      CASE suitability
-        WHEN 'High' THEN 1
-        WHEN 'Medium' THEN 2
-        WHEN 'Moderate' THEN 2
-        WHEN 'Low' THEN 3
-        ELSE 4
-      END,
-      crop_name;
-    """
-    cursor.execute(query, (soil_type,))
-    return cursor.fetchall()
-
 
 def fetch_fertilizer_catalog(cursor):
     query = """
@@ -1692,3 +1671,55 @@ def get_soil_analysis_details(
             cursor.close()
         if conn:
             conn.close()
+
+def fetch_crop_recommendations_for_soil(cursor, soil_type: str):
+    query = """
+    SELECT
+        id,
+        soil_type,
+        crop_name,
+        suitability,
+        notes
+    FROM crop_recommendations
+    WHERE LOWER(TRIM(soil_type)) = LOWER(TRIM(%s))
+    ORDER BY
+        CASE
+            WHEN LOWER(TRIM(suitability)) = 'high' THEN 1
+            WHEN LOWER(TRIM(suitability)) IN ('medium', 'moderate') THEN 2
+            WHEN LOWER(TRIM(suitability)) = 'low' THEN 3
+            ELSE 4
+        END,
+        crop_name ASC;
+    """
+    cursor.execute(query, (soil_type,))
+    rows = cursor.fetchall()
+    return [dict(row) for row in rows]
+
+
+@app.get("/soil-analysis/crop-recommendations/{soil_type_name}")
+def get_soil_analysis_crop_recommendations(soil_type_name: str):
+    conn = None
+    cursor = None
+
+    try:
+        conn = get_connection()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        rows = fetch_crop_recommendations_for_soil(cursor, soil_type_name)
+
+        return {
+            "soil_type": soil_type_name,
+            "total_recommendations": len(rows),
+            "top_recommendation": rows[0] if rows else None,
+            "recommendations": rows
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+

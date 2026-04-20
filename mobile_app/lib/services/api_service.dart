@@ -338,6 +338,18 @@ class ApiService {
     return SoilAnalysisSupportResponse.fromJson(data);
   }
 
+  Future<Map<String, dynamic>> getCropRecommendationsBySoilType(
+    String soilType,
+  ) async {
+    final trimmedSoilType = soilType.trim();
+    final encodedSoilType = Uri.encodeComponent(trimmedSoilType);
+    final data = await _get(
+      '/soil-analysis/crop-recommendations/$encodedSoilType',
+    );
+
+    return Map<String, dynamic>.from(data as Map);
+  }
+
   Future<GeoJsonFeatureCollection> getSoilPolygons() async {
     final data = await _get('/soil/polygons');
     if (data['type'] == null && data['features'] == null) {

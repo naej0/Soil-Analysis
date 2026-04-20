@@ -10,45 +10,9 @@ class RecommendationCard extends StatelessWidget {
 
   final RecommendationItem recommendation;
 
-  Color _suitabilityColor(BuildContext context) {
-    switch (recommendation.suitability.toLowerCase()) {
-      case 'good':
-      case 'high':
-        return Colors.green.shade700;
-      case 'moderate':
-      case 'medium':
-        return Colors.orange.shade700;
-      case 'not ideal':
-      case 'low':
-        return Colors.red.shade700;
-      default:
-        return Theme.of(context).colorScheme.onSurfaceVariant;
-    }
-  }
-
-  String _suitabilityLabel() {
-    switch (recommendation.suitability.toLowerCase()) {
-      case 'good':
-        return 'Good';
-      case 'moderate':
-      case 'medium':
-        return 'Moderate';
-      case 'high':
-        return 'High';
-      case 'not ideal':
-        return 'Not Ideal';
-      case 'low':
-        return 'Low';
-      default:
-        final label = recommendation.suitability.trim();
-        return label.isEmpty ? 'Info' : label;
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final suitabilityColor = _suitabilityColor(context);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -69,23 +33,6 @@ class RecommendationCard extends StatelessWidget {
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: colorScheme.onSurfaceVariant,
                 ),
-          ),
-        ),
-        trailing: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: suitabilityColor.withOpacity(0.12),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(
-              color: suitabilityColor.withOpacity(0.18),
-            ),
-          ),
-          child: Text(
-            _suitabilityLabel(),
-            style: TextStyle(
-              color: suitabilityColor,
-              fontWeight: FontWeight.w600,
-            ),
           ),
         ),
       ),
