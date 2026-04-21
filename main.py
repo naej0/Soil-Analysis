@@ -3,7 +3,8 @@ from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 import requests
 from psycopg2.extras import RealDictCursor
-
+import os
+import psycopg2
 from db import get_connection
 from routes.admin import router as admin_router
 from routes.ai import router as ai_router
@@ -22,6 +23,245 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def get_db_connection():
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise HTTPException(status_code=500, detail="DATABASE_URL is missing")
+    return psycopg2.connect(database_url)
+
+def table_exists(cur, table_name: str) -> bool:
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public'
+              AND table_name = %s
+        ) AS exists
+    """, (table_name,))
+    row = cur.fetchone()
+    return bool(row["exists"])
+
+def column_exists(cur, table_name: str, column_name: str) -> bool:
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = %s
+              AND column_name = %s
+        ) AS exists
+    """, (table_name, column_name))
+    row = cur.fetchone()
+    return bool(row["exists"])
+
+def fetch_count(cur, sql: str, params=None) -> int:
+    cur.execute(sql, params or ())
+    row = cur.fetchone()
+    if not row:
+        return 0
+    return int(row["count"] or 0)
+
+@app.get("/admin/dashboard")
+def get_admin_dashboard(
+    admin_id: Optional[int] = Query(None),
+    admin_user_id: Optional[int] = Query(None),
+    x_admin_user_id: Optional[str] = Header(None),
+):
+    effective_admin_id = admin_user_id or admin_id
+
+    if effective_admin_id is None and x_admin_user_id:
+        try:
+            effective_admin_id = int(x_admin_user_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid X-Admin-User-Id header")
+
+    if effective_admin_id is None:
+        raise HTTPException(status_code=400, detail="admin_user_id or admin_id is required")
+
+    conn = None
+    cur = None
+
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # Check if admin user exists
+        cur.execute("SELECT id FROM users WHERE id = %s LIMIT 1", (effective_admin_id,))
+        admin = cur.fetchone()
+        if not admin:
+            raise HTTPException(status_code=404, detail="Admin user not found")
+
+        # -----------------------------
+        # USERS
+        # -----------------------------
+        total_users = 0
+        active_users = 0
+        restricted_users = 0
+
+        if table_exists(cur, "users"):
+            total_users = fetch_count(cur, "SELECT COUNT(*) AS count FROM users")
+
+            if column_exists(cur, "users", "status"):
+                active_users = fetch_count(
+                    cur,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM users
+                    WHERE LOWER(COALESCE(status, '')) IN ('active', 'approved')
+                    """
+                )
+                restricted_users = fetch_count(
+                    cur,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM users
+                    WHERE LOWER(COALESCE(status, '')) IN ('restricted', 'blocked', 'disabled')
+                    """
+                )
+            elif column_exists(cur, "users", "is_active"):
+                active_users = fetch_count(
+                    cur,
+                    "SELECT COUNT(*) AS count FROM users WHERE COALESCE(is_active, FALSE) = TRUE"
+                )
+
+            if restricted_users == 0 and column_exists(cur, "users", "is_restricted"):
+                restricted_users = fetch_count(
+                    cur,
+                    "SELECT COUNT(*) AS count FROM users WHERE COALESCE(is_restricted, FALSE) = TRUE"
+                )
+
+        if restricted_users == 0 and table_exists(cur, "user_violations") and column_exists(cur, "user_violations", "user_id"):
+            restricted_users = fetch_count(
+                cur,
+                "SELECT COUNT(DISTINCT user_id) AS count FROM user_violations"
+            )
+
+        if active_users == 0 and total_users > 0:
+            active_users = total_users - restricted_users
+            if active_users < 0:
+                active_users = 0
+
+        # -----------------------------
+        # LAND LEASES
+        # -----------------------------
+        total_lease_listings = 0
+        active_lease_listings = 0
+        flagged_lease_listings = 0
+
+        if table_exists(cur, "land_leases"):
+            total_lease_listings = fetch_count(cur, "SELECT COUNT(*) AS count FROM land_leases")
+
+            if column_exists(cur, "land_leases", "is_hidden"):
+                active_lease_listings = fetch_count(
+                    cur,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM land_leases
+                    WHERE COALESCE(is_hidden, FALSE) = FALSE
+                    """
+                )
+            elif column_exists(cur, "land_leases", "status"):
+                active_lease_listings = fetch_count(
+                    cur,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM land_leases
+                    WHERE LOWER(COALESCE(status, '')) NOT IN ('hidden', 'inactive', 'deleted')
+                    """
+                )
+            else:
+                active_lease_listings = total_lease_listings
+
+            if column_exists(cur, "land_leases", "is_flagged"):
+                flagged_lease_listings = fetch_count(
+                    cur,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM land_leases
+                    WHERE COALESCE(is_flagged, FALSE) = TRUE
+                    """
+                )
+            elif column_exists(cur, "land_leases", "status"):
+                flagged_lease_listings = fetch_count(
+                    cur,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM land_leases
+                    WHERE LOWER(COALESCE(status, '')) IN ('flagged', 'reported')
+                    """
+                )
+
+        # -----------------------------
+        # PRODUCTIVITY
+        # -----------------------------
+        total_productivity_records = 0
+        if table_exists(cur, "productivity_records"):
+            total_productivity_records = fetch_count(
+                cur,
+                "SELECT COUNT(*) AS count FROM productivity_records"
+            )
+
+        # -----------------------------
+        # SOIL ANALYSIS LOGS
+        # -----------------------------
+        total_soil_analyses = 0
+        common_soil_types = []
+
+        if table_exists(cur, "soil_analysis_logs"):
+            total_soil_analyses = fetch_count(
+                cur,
+                "SELECT COUNT(*) AS count FROM soil_analysis_logs"
+            )
+
+            soil_type_column = None
+            for col in ["soil_type", "predicted_soil_type", "detected_soil_type", "final_soil_type"]:
+                if column_exists(cur, "soil_analysis_logs", col):
+                    soil_type_column = col
+                    break
+
+            if soil_type_column:
+                cur.execute(f"""
+                    SELECT {soil_type_column} AS soil_type, COUNT(*) AS total
+                    FROM soil_analysis_logs
+                    WHERE {soil_type_column} IS NOT NULL
+                      AND TRIM({soil_type_column}) <> ''
+                    GROUP BY {soil_type_column}
+                    ORDER BY total DESC
+                    LIMIT 5
+                """)
+                rows = cur.fetchall()
+                common_soil_types = [
+                    {
+                        "soil_type": row["soil_type"],
+                        "count": int(row["total"])
+                    }
+                    for row in rows
+                ]
+
+        return {
+            "total_users": total_users,
+            "active_users": active_users,
+            "restricted_users": restricted_users,
+            "total_lease_listings": total_lease_listings,
+            "active_lease_listings": active_lease_listings,
+            "flagged_lease_listings": flagged_lease_listings,
+            "total_productivity_records": total_productivity_records,
+            "total_soil_analyses": total_soil_analyses,
+            "common_soil_types": common_soil_types,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Admin dashboard error: {str(e)}")
+    finally:
+        if cur:
+            cur.close()
+        if conn:
+            conn.close()
+
 
 @app.get("/")
 def home():

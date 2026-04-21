@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
-
 import 'package:http/http.dart' as http;
-
 import '../config/api_config.dart';
 import '../models/assistant_model.dart';
 import '../models/ai_prediction_model.dart';
@@ -21,6 +19,7 @@ class ApiException implements Exception {
   @override
   String toString() => message;
 }
+
 
 class ApiService {
   ApiService({http.Client? client}) : _client = client ?? http.Client();
@@ -61,6 +60,7 @@ class ApiService {
       queryParameters: query.isEmpty ? null : query,
     );
   }
+
 
   Map<String, dynamic> _adminQueryParameters(int adminUserId) {
     return {
