@@ -1,7 +1,6 @@
 import os
 from contextlib import contextmanager
 import psycopg2
-from psycopg2.extras import RealDictCursor
 
 
 def get_connection():
@@ -17,11 +16,11 @@ def get_connection():
         )
 
     return psycopg2.connect(
-        dbname=os.getenv("PGDATABASE", "postgres"),
-        user=os.getenv("PGUSER", "postgres"),
-        password=os.getenv("PGPASSWORD", "Soilcrop123"),
-        host=os.getenv("PGHOST", "127.0.0.1"),
-        port=os.getenv("PGPORT", "5432"),
+        dbname=os.getenv("PGDATABASE") or os.getenv("DB_NAME") or "postgres",
+        user=os.getenv("PGUSER") or os.getenv("DB_USER") or "postgres",
+        password=os.getenv("PGPASSWORD") or os.getenv("DB_PASSWORD") or "",
+        host=os.getenv("PGHOST") or os.getenv("DB_HOST") or "127.0.0.1",
+        port=os.getenv("PGPORT") or os.getenv("DB_PORT") or "5432",
         connect_timeout=10
     )
 
