@@ -1,41 +1,27 @@
 from fastapi import FastAPI, HTTPException, Query
-from typing import Optional, List, Dict, Any
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
 import requests
+from psycopg2.extras import RealDictCursor
+
+from db import get_connection
 from routes.admin import router as admin_router
 from routes.ai import router as ai_router
 from routes.assistant import router as assistant_router
 
 app = FastAPI()
+
 app.include_router(admin_router)
 app.include_router(ai_router)
 app.include_router(assistant_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"],   # change this later to your frontend domain for stricter production security
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-def get_connection():
-    return psycopg2.connect(
-        dbname="postgres",
-        user="postgres",
-        password="SoilCrop123",
-        host="localhost",
-        port="5432"
-    )
-
-def get_db_connection():
-    return psycopg2.connect(
-        os.getenv("DATABASE_URL"),
-        cursor_factory=RealDictCursor
-    )
 
 @app.get("/")
 def home():
@@ -408,78 +394,6 @@ def fetch_support_fertilizer_recommendations(
         })
 
     return recommendations
-
-
-@app.get("/soil-analysis/details")
-def get_soil_analysis_details(
-    soil_type: str = Query(..., description="Predicted soil type from the soil analysis module"),
-    crop_name: Optional[str] = Query(None, description="Optional crop filter for fertilizer rules")
-):
-    conn = None
-    cursor = None
-
-    try:
-        conn = get_connection()
-        cursor = conn.cursor(cursor_factory=RealDictCursor)
-
-        soil_check_query = """
-        SELECT
-            id,
-            soil_type_name,
-            description
-        FROM soil_types
-        WHERE LOWER(soil_type_name) = LOWER(%s)
-        LIMIT 1;
-        """
-        cursor.execute(soil_check_query, (soil_type,))
-        soil_row = cursor.fetchone()
-
-        if not soil_row:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Unsupported soil type: {soil_type}"
-            )
-
-        productivity_basis = fetch_soil_productivity_basis(cursor, soil_type)
-        crop_recommendations = fetch_crop_recommendations_for_soil(cursor, soil_type)
-
-        derived_productivity_level = None
-        if productivity_basis:
-            derived_productivity_level = productivity_basis["productivity_level"]
-
-        fertilizer_recommendations = fetch_fertilizer_recommendations(
-            cursor,
-            soil_type=soil_type,
-            productivity_level=derived_productivity_level,
-            crop_name=crop_name
-        )
-
-        fertilizer_catalog = fetch_fertilizer_catalog(cursor)
-
-        return {
-            "soil_type": soil_row["soil_type_name"],
-            "soil_description": soil_row["description"],
-            "productivity_basis": productivity_basis,
-            "recommended_crops": crop_recommendations,
-            "fertilizer_recommendations": fertilizer_recommendations,
-            "fertilizer_catalog": fertilizer_catalog,
-            "filters": {
-                "crop_name": crop_name,
-                "productivity_level": derived_productivity_level
-            }
-        }
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
 
 
 @app.get("/soil-analysis/productivity-basis")

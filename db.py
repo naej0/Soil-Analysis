@@ -1,37 +1,24 @@
-from contextlib import contextmanager
-
+import os
 import psycopg2
-from psycopg2.extras import RealDictCursor
-
-from config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER
 
 
 def get_connection():
+    database_url = os.getenv("DATABASE_URL")
+
+    if database_url:
+        if database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+        return psycopg2.connect(
+            database_url,
+            connect_timeout=10
+        )
+
     return psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT,
+        dbname=os.getenv("PGDATABASE") or os.getenv("DB_NAME") or "postgres",
+        user=os.getenv("PGUSER") or os.getenv("DB_USER") or "postgres",
+        password=os.getenv("PGPASSWORD") or os.getenv("DB_PASSWORD") or "",
+        host=os.getenv("PGHOST") or os.getenv("DB_HOST") or "127.0.0.1",
+        port=os.getenv("PGPORT") or os.getenv("DB_PORT") or "5432",
+        connect_timeout=10
     )
-
-
-@contextmanager
-def get_cursor(dict_cursor: bool = False):
-    connection = None
-    cursor = None
-    try:
-        connection = get_connection()
-        cursor_factory = RealDictCursor if dict_cursor else None
-        cursor = connection.cursor(cursor_factory=cursor_factory)
-        yield connection, cursor
-        connection.commit()
-    except Exception:
-        if connection:
-            connection.rollback()
-        raise
-    finally:
-        if cursor:
-            cursor.close()
-        if connection:
-            connection.close()
