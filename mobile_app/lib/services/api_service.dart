@@ -114,6 +114,57 @@ class ApiService {
       headers: _adminHeaders(adminUserId),
     );
 
+    final usersSection = data['users'] is Map<String, dynamic>
+        ? Map<String, dynamic>.from(data['users'])
+        : data['users'] is Map
+            ? Map<String, dynamic>.from(data['users'] as Map)
+            : <String, dynamic>{};
+
+    final leasesSection = data['leases'] is Map<String, dynamic>
+        ? Map<String, dynamic>.from(data['leases'])
+        : data['leases'] is Map
+            ? Map<String, dynamic>.from(data['leases'] as Map)
+            : <String, dynamic>{};
+
+    final productivitySection = data['productivity'] is Map<String, dynamic>
+        ? Map<String, dynamic>.from(data['productivity'])
+        : data['productivity'] is Map
+            ? Map<String, dynamic>.from(data['productivity'] as Map)
+            : <String, dynamic>{};
+
+    final soilLogsSection = data['soil_analysis_logs'] is Map<String, dynamic>
+        ? Map<String, dynamic>.from(data['soil_analysis_logs'])
+        : data['soil_analysis_logs'] is Map
+            ? Map<String, dynamic>.from(data['soil_analysis_logs'] as Map)
+            : <String, dynamic>{};
+
+    final hasNestedFormat = usersSection.isNotEmpty ||
+        leasesSection.isNotEmpty ||
+        productivitySection.isNotEmpty ||
+        soilLogsSection.isNotEmpty;
+
+    if (hasNestedFormat) {
+      return {
+        'users': {
+          'total': usersSection['total'] ?? 0,
+          'active': usersSection['active'] ?? 0,
+          'restricted': usersSection['restricted'] ?? 0,
+        },
+        'leases': {
+          'total': leasesSection['total'] ?? 0,
+          'active': leasesSection['active'] ?? 0,
+          'flagged': leasesSection['flagged'] ?? 0,
+        },
+        'productivity': {
+          'total_records': productivitySection['total_records'] ?? 0,
+        },
+        'soil_analysis_logs': {
+          'total_logs': soilLogsSection['total_logs'] ?? 0,
+          'common_soil_types': soilLogsSection['common_soil_types'] ?? const [],
+        },
+      };
+    }
+
     return {
       'users': {
         'total': data['total_users'] ?? 0,
@@ -121,16 +172,18 @@ class ApiService {
         'restricted': data['restricted_users'] ?? 0,
       },
       'leases': {
-        'total': data['total_lease_listings'] ?? 0,
-        'active': data['active_lease_listings'] ?? 0,
-        'flagged': data['flagged_lease_listings'] ?? 0,
+        'total': data['total_lease_listings'] ?? data['total_leases'] ?? 0,
+        'active': data['active_lease_listings'] ?? data['active_leases'] ?? 0,
+        'flagged':
+            data['flagged_lease_listings'] ?? data['flagged_leases'] ?? 0,
       },
       'productivity': {
         'total_records': data['total_productivity_records'] ?? 0,
       },
       'soil_analysis_logs': {
-        'total_logs': data['total_soil_analyses'] ?? 0,
-        'common_soil_types': data['common_soil_types'] ?? [],
+        'total_logs':
+            data['total_soil_analyses'] ?? data['total_soil_analysis_logs'] ?? 0,
+        'common_soil_types': data['common_soil_types'] ?? const [],
       },
     };
   }
@@ -143,43 +196,10 @@ class ApiService {
       queryParameters: _adminQueryParameters(adminUserId),
       headers: _adminHeaders(adminUserId),
     );
-    return _mapList(data['users']);
-  }
 
-  Future<Map<String, dynamic>> restrictUser({
-    required int adminUserId,
-    required int userId,
-    String? reason,
-  }) async {
-    final trimmedReason = reason?.trim();
-    final data = await _patchJson(
-      '/admin/users/$userId/restrict',
-      queryParameters: _adminQueryParameters(adminUserId),
-      headers: _adminHeaders(adminUserId),
-      body: {
-        'admin_id': adminUserId,
-        'violation_type': 'policy_violation',
-        'reason': (trimmedReason != null && trimmedReason.isNotEmpty)
-            ? trimmedReason
-            : 'Restricted by admin',
-      },
+    return _mapList(
+      data['users'] ?? data['data'] ?? data['records'] ?? const [],
     );
-    return Map<String, dynamic>.from(data);
-  }
-
-  Future<Map<String, dynamic>> reactivateUser({
-    required int adminUserId,
-    required int userId,
-  }) async {
-    final data = await _patchJson(
-      '/admin/users/$userId/reactivate',
-      queryParameters: _adminQueryParameters(adminUserId),
-      headers: _adminHeaders(adminUserId),
-      body: {
-        'admin_id': adminUserId,
-      },
-    );
-    return Map<String, dynamic>.from(data);
   }
 
   Future<List<Map<String, dynamic>>> getAdminLeases({
@@ -190,61 +210,14 @@ class ApiService {
       queryParameters: _adminQueryParameters(adminUserId),
       headers: _adminHeaders(adminUserId),
     );
-    return _mapList(data['leases']);
-  }
 
-  Future<Map<String, dynamic>> hideLease({
-    required int adminUserId,
-    required int leaseId,
-    String? reason,
-  }) async {
-    final trimmedReason = reason?.trim();
-    final data = await _patchJson(
-      '/admin/leases/$leaseId/hide',
-      queryParameters: _adminQueryParameters(adminUserId),
-      headers: _adminHeaders(adminUserId),
-      body: {
-        'admin_id': adminUserId,
-        if (trimmedReason != null && trimmedReason.isNotEmpty)
-          'reason': trimmedReason,
-      },
+    return _mapList(
+      data['leases'] ??
+          data['lease_listings'] ??
+          data['data'] ??
+          data['records'] ??
+          const [],
     );
-    return Map<String, dynamic>.from(data);
-  }
-
-  Future<Map<String, dynamic>> flagLease({
-    required int adminUserId,
-    required int leaseId,
-    String? reason,
-  }) async {
-    final trimmedReason = reason?.trim();
-    final data = await _patchJson(
-      '/admin/leases/$leaseId/flag',
-      queryParameters: _adminQueryParameters(adminUserId),
-      headers: _adminHeaders(adminUserId),
-      body: {
-        'admin_id': adminUserId,
-        'reason': (trimmedReason != null && trimmedReason.isNotEmpty)
-            ? trimmedReason
-            : 'Flagged by admin',
-      },
-    );
-    return Map<String, dynamic>.from(data);
-  }
-
-  Future<Map<String, dynamic>> restoreLease({
-    required int adminUserId,
-    required int leaseId,
-  }) async {
-    final data = await _patchJson(
-      '/admin/leases/$leaseId/restore',
-      queryParameters: _adminQueryParameters(adminUserId),
-      headers: _adminHeaders(adminUserId),
-      body: {
-        'admin_id': adminUserId,
-      },
-    );
-    return Map<String, dynamic>.from(data);
   }
 
   Future<List<Map<String, dynamic>>> getAdminProductivity({
@@ -255,7 +228,13 @@ class ApiService {
       queryParameters: _adminQueryParameters(adminUserId),
       headers: _adminHeaders(adminUserId),
     );
-    return _mapList(data['productivity_records']);
+
+    return _mapList(
+      data['records'] ??
+          data['productivity_records'] ??
+          data['data'] ??
+          const [],
+    );
   }
 
   Future<List<Map<String, dynamic>>> getAdminSoilLogs({
@@ -266,7 +245,13 @@ class ApiService {
       queryParameters: _adminQueryParameters(adminUserId),
       headers: _adminHeaders(adminUserId),
     );
-    return _mapList(data['soil_analysis_logs']);
+
+    return _mapList(
+      data['logs'] ??
+          data['soil_analysis_logs'] ??
+          data['data'] ??
+          const [],
+    );
   }
 
   Future<DashboardModel> getDashboardByLocation({

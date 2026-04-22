@@ -209,31 +209,37 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         label: 'Users',
         value: '$totalUsers',
         icon: Icons.people_outline,
+        onTap: _openUsers,
       ),
       _AdminMetric(
         label: 'Restricted Users',
         value: '$restrictedUsers',
         icon: Icons.block_outlined,
+        onTap: _openUsers,
       ),
       _AdminMetric(
         label: 'Active Leases',
         value: '$activeLeases',
         icon: Icons.storefront_outlined,
+        onTap: _openLeases,
       ),
       _AdminMetric(
         label: 'Flagged Leases',
         value: '$flaggedLeases',
         icon: Icons.flag_outlined,
+        onTap: _openLeases,
       ),
       _AdminMetric(
         label: 'Productivity Records',
         value: '$totalProductivity',
         icon: Icons.insights_outlined,
+        onTap: _openProductivity,
       ),
       _AdminMetric(
         label: 'Soil Logs',
         value: '$totalSoilLogs',
         icon: Icons.history_edu_outlined,
+        onTap: _openSoilLogs,
       ),
     ];
 
@@ -438,11 +444,13 @@ class _AdminMetric {
     required this.label,
     required this.value,
     required this.icon,
+    required this.onTap,
   });
 
   final String label;
   final String value;
   final IconData icon;
+  final VoidCallback onTap;
 }
 
 class _AdminMetricCard extends StatelessWidget {
@@ -452,32 +460,36 @@ class _AdminMetricCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(metric.icon, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(height: 8),
-            Text(
-              metric.value,
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-            ),
-            const SizedBox(height: 0),
-            Text(
-              metric.label,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
-                  ),
-            ),
-          ],
+    return InkWell(
+      onTap: metric.onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Card(
+        margin: EdgeInsets.zero,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(metric.icon, color: Theme.of(context).colorScheme.primary),
+              const SizedBox(height: 8),
+              Text(
+                metric.value,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                metric.label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+              ),
+            ],
+          ),
         ),
       ),
     );
