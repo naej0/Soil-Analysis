@@ -1,0 +1,30 @@
+{
+  "source_dir": "C:\\Users\\Jean\\soil_backend\\soil_images",
+  "train_dir": "C:\\Users\\Jean\\soil_backend\\ml\\dataset\\train",
+  "val_dir": "C:\\Users\\Jean\\soil_backend\\ml\\dataset\\val",
+  "val_split": 0.2,
+  "seed": 42,
+  "counts": {
+    "train": {
+      "Silty Clay": 32,
+      "Loam": 35,
+      "Clay Loam": 35,
+      "Clay": 38,
+      "Rock Land": 35
+    },
+    "val": {
+      "Silty Clay": 7,
+      "Loam": 8,
+      "Clay Loam": 8,
+      "Clay": 9,
+      "Rock Land": 8
+    },
+    "source": {
+      "Silty Clay": 39,
+      "Loam": 43,
+      "Clay Loam": 43,
+      "Clay": 47,
+      "Rock Land": 43
+    }
+  }
+}

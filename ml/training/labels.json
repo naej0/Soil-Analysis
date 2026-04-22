@@ -1,0 +1,27 @@
+{
+  "class_names": [
+    "Silty Clay",
+    "Loam",
+    "Clay Loam",
+    "Clay",
+    "Rock Land"
+  ],
+  "class_to_index": {
+    "Silty Clay": 0,
+    "Loam": 1,
+    "Clay Loam": 2,
+    "Clay": 3,
+    "Rock Land": 4
+  },
+  "index_to_class": {
+    "0": "Silty Clay",
+    "1": "Loam",
+    "2": "Clay Loam",
+    "3": "Clay",
+    "4": "Rock Land"
+  },
+  "image_size": [
+    224,
+    224
+  ]
+}

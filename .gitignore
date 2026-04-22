@@ -1,0 +1,62 @@
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+.pytest_cache/
+.mypy_cache/
+
+# Environment
+.env
+.env.*
+
+# Database / backup
+*.db
+*.sqlite3
+*.backup
+backup/
+backups/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build / dist
+build/
+dist/
+*.egg-info/
+
+# Uploaded / generated files
+uploads/
+temp/
+tmp/
+
+# Flutter / Android / iOS (if naa sa same repo)
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+android/.gradle/
+android/app/build/
+ios/Pods/
+
+# Large binaries
+*.apk
+*.aab
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.h5
+*.pt
+*.pth
+*.onnx
+*.csv
+*.xlsx
