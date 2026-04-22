@@ -1,622 +1,709 @@
-from functools import lru_cache
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from pydantic import BaseModel
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 
-from db import get_cursor, get_db_connection
+from db import get_cursor
+
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 
-class RestrictRequest(BaseModel):
-    admin_id: int
-    violation_type: str = "policy_violation"
-    reason: str
+def _clean_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
-class ReactivateRequest(BaseModel):
-    admin_id: int
+def _payload_text(payload: dict | None, key: str) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    return _clean_text(payload.get(key))
 
 
-class LeaseModerationRequest(BaseModel):
-    admin_id: int
-    reason: Optional[str] = None
+def _rows_to_dicts(rows) -> list[dict]:
+    return [dict(row) for row in (rows or [])]
 
 
-@lru_cache(maxsize=64)
-def _get_columns(table_name: str) -> set[str]:
-    try:
-        with get_cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_schema = 'public' AND table_name = %s
-                """,
-                (table_name,),
-            )
-            rows = cursor.fetchall() or []
-    except Exception:
-        return set()
+def _table_exists(cursor, table_name: str) -> bool:
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = %s
+        ) AS exists;
+        """,
+        (table_name,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return False
+    if isinstance(row, dict):
+        return bool(row.get("exists"))
+    return bool(row[0])
 
+
+def _get_columns(cursor, table_name: str) -> set[str]:
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position;
+        """,
+        (table_name,),
+    )
+    rows = cursor.fetchall()
     columns: set[str] = set()
     for row in rows:
         if isinstance(row, dict):
-            columns.add(str(row.get("column_name")))
+            columns.add(row["column_name"])
         else:
-            columns.add(str(row[0]))
+            columns.add(row[0])
     return columns
 
 
-def _table_exists(table_name: str) -> bool:
-    return bool(_get_columns(table_name))
+def _existing_columns(cursor, table_name: str, preferred_columns: list[str]) -> tuple[list[str], set[str]]:
+    columns = _get_columns(cursor, table_name)
+    return [column for column in preferred_columns if column in columns], columns
 
 
-def _row_to_dict(cursor: Any, row: Any) -> Optional[Dict[str, Any]]:
-    if row is None:
-        return None
-    if isinstance(row, dict):
-        return dict(row)
-    columns = [desc[0] for desc in cursor.description]
-    return dict(zip(columns, row))
+def _build_order_by(columns: set[str]) -> str:
+    if "created_at" in columns and "id" in columns:
+        return " ORDER BY created_at DESC NULLS LAST, id DESC"
+    if "updated_at" in columns and "id" in columns:
+        return " ORDER BY updated_at DESC NULLS LAST, id DESC"
+    if "id" in columns:
+        return " ORDER BY id DESC"
+    return ""
 
 
-def _rows_to_dicts(cursor: Any, rows: List[Any]) -> List[Dict[str, Any]]:
-    if not rows:
+def _fetch_table_rows(cursor, table_name: str, preferred_columns: list[str]) -> list[dict]:
+    if not _table_exists(cursor, table_name):
         return []
-    if isinstance(rows[0], dict):
-        return [dict(row) for row in rows]
-    columns = [desc[0] for desc in cursor.description]
-    return [dict(zip(columns, row)) for row in rows]
+
+    select_columns, existing = _existing_columns(cursor, table_name, preferred_columns)
+    if not select_columns:
+        return []
+
+    query = f"SELECT {', '.join(select_columns)} FROM {table_name}{_build_order_by(existing)};"
+    cursor.execute(query)
+    return _rows_to_dicts(cursor.fetchall())
 
 
-def _fetch_one(query: str, params: tuple = ()) -> Optional[Dict[str, Any]]:
-    with get_cursor() as cursor:
-        cursor.execute(query, params)
-        return _row_to_dict(cursor, cursor.fetchone())
+def _fetch_record_by_id(cursor, table_name: str, record_id: int, preferred_columns: list[str]) -> dict:
+    if not _table_exists(cursor, table_name):
+        raise HTTPException(status_code=404, detail=f"{table_name} table not found")
 
+    select_columns, _ = _existing_columns(cursor, table_name, preferred_columns)
+    if "id" not in select_columns:
+        raise HTTPException(status_code=500, detail=f"{table_name} table is missing id column")
 
-def _fetch_all(query: str, params: tuple = ()) -> List[Dict[str, Any]]:
-    with get_cursor() as cursor:
-        cursor.execute(query, params)
-        return _rows_to_dicts(cursor, cursor.fetchall() or [])
-
-
-def _pick(columns: set[str], candidates: List[str]) -> Optional[str]:
-    for candidate in candidates:
-        if candidate in columns:
-            return candidate
-    return None
-
-
-def _expr(
-    columns: set[str],
-    candidates: List[str],
-    alias: str,
-    default_sql: str = "NULL",
-    coalesce_sql: Optional[str] = None,
-) -> str:
-    column = _pick(columns, candidates)
-    if column:
-        if coalesce_sql is not None:
-            return f"COALESCE({column}, {coalesce_sql}) AS {alias}"
-        return f"{column} AS {alias}"
-    return f"{default_sql} AS {alias}"
-
-
-def _location_expr(columns: set[str]) -> str:
-    direct = _pick(columns, ["location", "address"])
-    if direct:
-        return f"{direct} AS location"
-
-    parts = [
-        column
-        for column in ["barangay", "municipality", "city", "province"]
-        if column in columns
-    ]
-    if parts:
-        joined = ", ".join(parts)
-        return f"NULLIF(CONCAT_WS(', ', {joined}), '') AS location"
-
-    return "NULL AS location"
-
-
-def _safe_count(table_name: str, where_sql: Optional[str] = None, params: tuple = ()) -> int:
-    if not _table_exists(table_name):
-        return 0
-
-    query = f"SELECT COUNT(*) AS count FROM {table_name}"
-    if where_sql:
-        query += f" WHERE {where_sql}"
-
-    row = _fetch_one(query, params)
-    return int((row or {}).get("count", 0) or 0)
-
-
-def get_admin_user_id(
-    admin_user_id: Optional[int] = Query(None),
-    x_admin_user_id: Optional[str] = Header(None),
-) -> int:
-    if admin_user_id is not None:
-        return admin_user_id
-
-    if x_admin_user_id:
-        try:
-            return int(x_admin_user_id)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail="Invalid X-Admin-User-Id header.") from exc
-
-    raise HTTPException(status_code=400, detail="Admin user ID is required.")
-
-
-def require_admin(admin_user_id: int = Depends(get_admin_user_id)) -> int:
-    user_columns = _get_columns("users")
-
-    if not user_columns or "id" not in user_columns:
-        return admin_user_id
-
-    if "is_admin" in user_columns:
-        query = "SELECT id FROM users WHERE id = %s AND COALESCE(is_admin, FALSE) = TRUE"
-        row = _fetch_one(query, (admin_user_id,))
-        if not row:
-            raise HTTPException(status_code=403, detail="Admin access required.")
-        return admin_user_id
-
-    if "role" in user_columns:
-        query = """
-            SELECT id
-            FROM users
-            WHERE id = %s
-              AND LOWER(COALESCE(role, '')) IN ('admin', 'administrator')
-        """
-        row = _fetch_one(query, (admin_user_id,))
-        if not row:
-            raise HTTPException(status_code=403, detail="Admin access required.")
-        return admin_user_id
-
-    row = _fetch_one("SELECT id FROM users WHERE id = %s", (admin_user_id,))
+    cursor.execute(
+        f"SELECT {', '.join(select_columns)} FROM {table_name} WHERE id = %s LIMIT 1;",
+        (record_id,),
+    )
+    row = cursor.fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Admin user not found.")
+        raise HTTPException(status_code=404, detail=f"{table_name} record not found")
+    return dict(row)
 
-    return admin_user_id
+
+def _fetch_count(cursor, sql: str, params: tuple = ()) -> int:
+    cursor.execute(sql, params)
+    row = cursor.fetchone()
+    if not row:
+        return 0
+    if isinstance(row, dict):
+        return int(row.get("count") or 0)
+    return int(row[0] or 0)
+
+
+def require_admin(
+    x_admin_user_id: Optional[int] = Header(None, alias="X-Admin-User-Id"),
+    admin_user_id: Optional[int] = Query(None),
+    admin_id: Optional[int] = Query(None),
+) -> dict:
+    acting_user_id = x_admin_user_id or admin_user_id or admin_id
+    if acting_user_id is None:
+        raise HTTPException(status_code=401, detail="Admin user ID is required")
+
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        if not _table_exists(cursor, "users"):
+            raise HTTPException(status_code=500, detail="users table not found")
+
+        select_columns, existing = _existing_columns(
+            cursor,
+            "users",
+            ["id", "full_name", "email", "role", "is_active", "is_restricted"],
+        )
+        if "id" not in select_columns:
+            raise HTTPException(status_code=500, detail="users table is missing id column")
+
+        cursor.execute(
+            f"SELECT {', '.join(select_columns)} FROM users WHERE id = %s LIMIT 1;",
+            (acting_user_id,),
+        )
+        admin_user = cursor.fetchone()
+
+    if not admin_user:
+        raise HTTPException(status_code=401, detail="Admin user not found")
+
+    admin_user = dict(admin_user)
+
+    if "role" in existing and (admin_user.get("role") or "").strip().lower() != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    if "is_active" in existing and admin_user.get("is_active") is False:
+        raise HTTPException(status_code=403, detail="Admin account is inactive")
+    if "is_restricted" in existing and admin_user.get("is_restricted") is True:
+        raise HTTPException(status_code=403, detail="Admin account is restricted")
+
+    return admin_user
 
 
 @router.get("/dashboard")
 def get_admin_dashboard(_: dict = Depends(require_admin)):
     with get_cursor(dict_cursor=True) as (_, cursor):
-        cursor.execute(
-            """
-            SELECT
-                (SELECT COUNT(*) FROM users) AS total_users,
-                (SELECT COUNT(*) FROM users WHERE COALESCE(is_active, TRUE) IS TRUE) AS active_users,
-                (SELECT COUNT(*) FROM users WHERE COALESCE(is_restricted, FALSE) IS TRUE) AS restricted_users,
-                (SELECT COUNT(*) FROM land_leases) AS total_lease_listings,
-                (SELECT COUNT(*) FROM land_leases WHERE LOWER(COALESCE(status, 'active')) = 'active') AS active_lease_listings,
-                (SELECT COUNT(*) FROM land_leases WHERE COALESCE(is_flagged, FALSE) IS TRUE OR LOWER(COALESCE(status, '')) = 'flagged') AS flagged_lease_listings,
-                (SELECT COUNT(*) FROM productivity_records) AS total_productivity_records,
-                (SELECT COUNT(*) FROM soil_analysis_logs) AS total_soil_analyses;
-            """
-        )
-        summary = dict(cursor.fetchone())
+        total_users = 0
+        admin_users = 0
+        active_users = 0
+        restricted_users = 0
 
-        cursor.execute(
-            """
-            SELECT soil_type, COUNT(*) AS count
-            FROM soil_analysis_logs
-            WHERE soil_type IS NOT NULL AND TRIM(soil_type) <> ''
-            GROUP BY soil_type
-            ORDER BY count DESC, soil_type ASC
-            LIMIT 5;
-            """
-        )
-        common_rows = cursor.fetchall()
+        if _table_exists(cursor, "users"):
+            user_columns = _get_columns(cursor, "users")
+            total_users = _fetch_count(cursor, "SELECT COUNT(*) AS count FROM users")
+
+            if "role" in user_columns:
+                admin_users = _fetch_count(
+                    cursor,
+                    "SELECT COUNT(*) AS count FROM users WHERE LOWER(COALESCE(role, '')) = 'admin'",
+                )
+
+            if "is_active" in user_columns:
+                active_users = _fetch_count(
+                    cursor,
+                    "SELECT COUNT(*) AS count FROM users WHERE COALESCE(is_active, TRUE) = TRUE",
+                )
+            else:
+                active_users = total_users
+
+            if "is_restricted" in user_columns:
+                restricted_users = _fetch_count(
+                    cursor,
+                    "SELECT COUNT(*) AS count FROM users WHERE COALESCE(is_restricted, FALSE) = TRUE",
+                )
+
+        total_lease_listings = 0
+        active_lease_listings = 0
+        hidden_lease_listings = 0
+        flagged_lease_listings = 0
+
+        if _table_exists(cursor, "land_leases"):
+            lease_columns = _get_columns(cursor, "land_leases")
+            total_lease_listings = _fetch_count(cursor, "SELECT COUNT(*) AS count FROM land_leases")
+
+            if "status" in lease_columns:
+                active_lease_listings = _fetch_count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM land_leases
+                    WHERE LOWER(COALESCE(status, 'active')) = 'active'
+                    """,
+                )
+                hidden_lease_listings = _fetch_count(
+                    cursor,
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM land_leases
+                    WHERE LOWER(COALESCE(status, '')) = 'hidden'
+                    """,
+                )
+            else:
+                active_lease_listings = total_lease_listings
+
+            if "is_hidden" in lease_columns:
+                hidden_lease_listings = _fetch_count(
+                    cursor,
+                    "SELECT COUNT(*) AS count FROM land_leases WHERE COALESCE(is_hidden, FALSE) = TRUE",
+                )
+                active_lease_listings = max(total_lease_listings - hidden_lease_listings, 0)
+
+            if "is_flagged" in lease_columns:
+                flagged_lease_listings = _fetch_count(
+                    cursor,
+                    "SELECT COUNT(*) AS count FROM land_leases WHERE COALESCE(is_flagged, FALSE) = TRUE",
+                )
+
+        total_productivity_records = 0
+        if _table_exists(cursor, "productivity_records"):
+            total_productivity_records = _fetch_count(
+                cursor,
+                "SELECT COUNT(*) AS count FROM productivity_records",
+            )
+
+        total_soil_analyses = 0
+        common_soil_types: list[dict] = []
+        if _table_exists(cursor, "soil_analysis_logs"):
+            log_columns = _get_columns(cursor, "soil_analysis_logs")
+            total_soil_analyses = _fetch_count(
+                cursor,
+                "SELECT COUNT(*) AS count FROM soil_analysis_logs",
+            )
+
+            soil_column = None
+            if "predicted_soil_type" in log_columns:
+                soil_column = "predicted_soil_type"
+            elif "soil_type" in log_columns:
+                soil_column = "soil_type"
+            elif "soil_name" in log_columns:
+                soil_column = "soil_name"
+
+            if soil_column:
+                cursor.execute(
+                    f"""
+                    SELECT {soil_column} AS soil_type, COUNT(*) AS total
+                    FROM soil_analysis_logs
+                    WHERE {soil_column} IS NOT NULL AND TRIM(CAST({soil_column} AS TEXT)) <> ''
+                    GROUP BY {soil_column}
+                    ORDER BY total DESC, {soil_column} ASC
+                    LIMIT 5;
+                    """
+                )
+                common_soil_types = _rows_to_dicts(cursor.fetchall())
 
     return {
-        "total_users": summary["total_users"],
-        "active_users": summary["active_users"],
-        "restricted_users": summary["restricted_users"],
-        "total_lease_listings": summary["total_lease_listings"],
-        "active_lease_listings": summary["active_lease_listings"],
-        "flagged_lease_listings": summary["flagged_lease_listings"],
-        "total_productivity_records": summary["total_productivity_records"],
-        "total_soil_analyses": summary["total_soil_analyses"],
-        "common_soil_types": [
-            {
-                "soil_type": row["soil_type"],
-                "count": row["count"],
-            }
-            for row in common_rows
-        ],
+        "total_users": total_users,
+        "admin_users": admin_users,
+        "active_users": active_users,
+        "restricted_users": restricted_users,
+        "total_lease_listings": total_lease_listings,
+        "active_lease_listings": active_lease_listings,
+        "hidden_lease_listings": hidden_lease_listings,
+        "flagged_lease_listings": flagged_lease_listings,
+        "total_productivity_records": total_productivity_records,
+        "total_soil_analyses": total_soil_analyses,
+        "common_soil_types": common_soil_types,
     }
 
 
 @router.get("/users")
-def get_users(admin_user_id: int = Depends(require_admin)):
-    user_columns = _get_columns("users")
-    if not user_columns:
-        return {"users": []}
-
-    if "id" not in user_columns:
-        raise HTTPException(status_code=500, detail="users.id column is missing.")
-
-    order_column = "created_at" if "created_at" in user_columns else "id"
-
-    query = f"""
-        SELECT
-            id,
-            {_expr(user_columns, ['email'], 'email')},
-            {_expr(user_columns, ['first_name', 'firstname', 'given_name'], 'first_name')},
-            {_expr(user_columns, ['last_name', 'lastname', 'surname', 'family_name'], 'last_name')},
-            {_expr(user_columns, ['profile_picture', 'profile_image', 'avatar', 'image_path'], 'profile_picture')},
-            {_expr(user_columns, ['is_active'], 'is_active', 'TRUE', 'TRUE')},
-            {_expr(user_columns, ['is_restricted'], 'is_restricted', 'FALSE', 'FALSE')},
-            {_expr(user_columns, ['created_at'], 'created_at')}
-        FROM users
-        ORDER BY {order_column} DESC NULLS LAST, id DESC
-    """
-
-    return {"users": _fetch_all(query)}
+def get_admin_users(_: dict = Depends(require_admin)):
+    user_columns = [
+        "id",
+        "full_name",
+        "email",
+        "role",
+        "is_active",
+        "is_restricted",
+        "restriction_reason",
+        "restricted_at",
+        "restricted_by",
+        "created_at",
+        "updated_at",
+    ]
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        users = _fetch_table_rows(cursor, "users", user_columns)
+    return {"users": users}
 
 
 @router.patch("/users/{user_id}/restrict")
 def restrict_user(
     user_id: int,
-    request: RestrictRequest,
-    admin_user_id: int = Depends(require_admin),
+    payload: dict | None = Body(None),
+    reason: str | None = Query(None),
+    admin_user: dict = Depends(require_admin),
 ):
-    if request.admin_id != admin_user_id:
-        raise HTTPException(status_code=403, detail="Admin mismatch.")
+    if admin_user["id"] == user_id:
+        raise HTTPException(status_code=400, detail="Admin users cannot restrict their own account")
 
-    user_columns = _get_columns("users")
-    if not user_columns:
-        raise HTTPException(status_code=500, detail="users table not found.")
+    restriction_reason = (
+        _payload_text(payload, "reason")
+        or _payload_text(payload, "restriction_reason")
+        or _clean_text(reason)
+        or "Restricted by admin"
+    )
 
-    updates: List[str] = []
+    user_columns = [
+        "id",
+        "full_name",
+        "email",
+        "role",
+        "is_active",
+        "is_restricted",
+        "restriction_reason",
+        "restricted_at",
+        "restricted_by",
+        "created_at",
+        "updated_at",
+    ]
 
-    if "is_restricted" in user_columns:
-        updates.append("is_restricted = TRUE")
-    if "is_active" in user_columns:
-        updates.append("is_active = FALSE")
-    if "updated_at" in user_columns:
-        updates.append("updated_at = NOW()")
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _fetch_record_by_id(cursor, "users", user_id, user_columns)
+        existing = _get_columns(cursor, "users")
 
-    if not updates:
-        raise HTTPException(
-            status_code=500,
-            detail="No supported restriction columns found on users table.",
+        set_parts = []
+        params: list[Any] = []
+
+        if "is_active" in existing:
+            set_parts.append("is_active = FALSE")
+        if "is_restricted" in existing:
+            set_parts.append("is_restricted = TRUE")
+        if "restriction_reason" in existing:
+            set_parts.append("restriction_reason = %s")
+            params.append(restriction_reason)
+        if "restricted_at" in existing:
+            set_parts.append("restricted_at = NOW()")
+        if "restricted_by" in existing:
+            set_parts.append("restricted_by = %s")
+            params.append(admin_user["id"])
+        if "updated_at" in existing:
+            set_parts.append("updated_at = NOW()")
+
+        if not set_parts:
+            raise HTTPException(status_code=500, detail="users table does not support restriction fields")
+
+        return_columns = [column for column in user_columns if column in existing]
+        params.append(user_id)
+
+        cursor.execute(
+            f"""
+            UPDATE users
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            RETURNING {', '.join(return_columns)};
+            """,
+            tuple(params),
         )
+        updated_user = cursor.fetchone()
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", (user_id,))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="User not found.")
-
-            violation_columns = _get_columns("user_violations")
-            if violation_columns:
-                insert_columns: List[str] = ["user_id"]
-                insert_values: List[str] = ["%s"]
-                insert_params: List[Any] = [user_id]
-
-                optional_values = {
-                    "admin_id": admin_user_id,
-                    "violation_type": request.violation_type,
-                    "reason": request.reason,
-                    "status": "restricted" if "status" in violation_columns else None,
-                    "created_at": "NOW()",
-                    "updated_at": "NOW()",
-                }
-
-                for column, value in optional_values.items():
-                    if column not in violation_columns or value is None:
-                        continue
-                    insert_columns.append(column)
-                    if value == "NOW()":
-                        insert_values.append("NOW()")
-                    else:
-                        insert_values.append("%s")
-                        insert_params.append(value)
-
-                cursor.execute(
-                    f"""
-                    INSERT INTO user_violations ({', '.join(insert_columns)})
-                    VALUES ({', '.join(insert_values)})
-                    """,
-                    tuple(insert_params),
-                )
-
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as exc:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to restrict user: {exc}") from exc
-    finally:
-        conn.close()
-
-    return {"message": "User restricted successfully."}
+    return {"message": "User restricted successfully", "user": dict(updated_user)}
 
 
 @router.patch("/users/{user_id}/reactivate")
-def reactivate_user(
-    user_id: int,
-    request: ReactivateRequest,
-    admin_user_id: int = Depends(require_admin),
-):
-    if request.admin_id != admin_user_id:
-        raise HTTPException(status_code=403, detail="Admin mismatch.")
+def reactivate_user(user_id: int, _: dict = Depends(require_admin)):
+    user_columns = [
+        "id",
+        "full_name",
+        "email",
+        "role",
+        "is_active",
+        "is_restricted",
+        "restriction_reason",
+        "restricted_at",
+        "restricted_by",
+        "created_at",
+        "updated_at",
+    ]
 
-    user_columns = _get_columns("users")
-    if not user_columns:
-        raise HTTPException(status_code=500, detail="users table not found.")
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _fetch_record_by_id(cursor, "users", user_id, user_columns)
+        existing = _get_columns(cursor, "users")
 
-    updates: List[str] = []
-    if "is_restricted" in user_columns:
-        updates.append("is_restricted = FALSE")
-    if "is_active" in user_columns:
-        updates.append("is_active = TRUE")
-    if "updated_at" in user_columns:
-        updates.append("updated_at = NOW()")
+        set_parts = []
+        if "is_active" in existing:
+            set_parts.append("is_active = TRUE")
+        if "is_restricted" in existing:
+            set_parts.append("is_restricted = FALSE")
+        if "restriction_reason" in existing:
+            set_parts.append("restriction_reason = NULL")
+        if "restricted_at" in existing:
+            set_parts.append("restricted_at = NULL")
+        if "restricted_by" in existing:
+            set_parts.append("restricted_by = NULL")
+        if "updated_at" in existing:
+            set_parts.append("updated_at = NOW()")
 
-    if not updates:
-        raise HTTPException(
-            status_code=500,
-            detail="No supported reactivation columns found on users table.",
+        if not set_parts:
+            raise HTTPException(status_code=500, detail="users table does not support reactivation fields")
+
+        return_columns = [column for column in user_columns if column in existing]
+
+        cursor.execute(
+            f"""
+            UPDATE users
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            RETURNING {', '.join(return_columns)};
+            """,
+            (user_id,),
         )
+        updated_user = cursor.fetchone()
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"UPDATE users SET {', '.join(updates)} WHERE id = %s", (user_id,))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="User not found.")
-
-            violation_columns = _get_columns("user_violations")
-            if violation_columns and "user_id" in violation_columns:
-                violation_updates: List[str] = []
-                params: List[Any] = []
-
-                if "status" in violation_columns:
-                    violation_updates.append("status = %s")
-                    params.append("resolved")
-                if "resolved_at" in violation_columns:
-                    violation_updates.append("resolved_at = NOW()")
-                if "updated_at" in violation_columns:
-                    violation_updates.append("updated_at = NOW()")
-
-                if violation_updates:
-                    params.append(user_id)
-                    cursor.execute(
-                        f"""
-                        UPDATE user_violations
-                        SET {', '.join(violation_updates)}
-                        WHERE user_id = %s
-                        """,
-                        tuple(params),
-                    )
-
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as exc:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to reactivate user: {exc}") from exc
-    finally:
-        conn.close()
-
-    return {"message": "User reactivated successfully."}
+    return {"message": "User reactivated successfully", "user": dict(updated_user)}
 
 
 @router.get("/leases")
-def get_leases(admin_user_id: int = Depends(require_admin)):
-    lease_columns = _get_columns("land_leases")
-    if not lease_columns:
-        return {"leases": []}
-
-    if "id" not in lease_columns:
-        raise HTTPException(status_code=500, detail="land_leases.id column is missing.")
-
-    order_column = "created_at" if "created_at" in lease_columns else "id"
-
-    query = f"""
-        SELECT
-            id,
-            {_expr(lease_columns, ['user_id'], 'user_id')},
-            {_expr(lease_columns, ['title', 'lease_title', 'listing_title', 'name', 'crop_name'], 'title')},
-            {_location_expr(lease_columns)},
-            {_expr(lease_columns, ['contact_person', 'owner_name', 'lessor_name'], 'contact_person')},
-            {_expr(lease_columns, ['contact_number', 'phone_number', 'mobile_number'], 'contact_number')},
-            {_expr(lease_columns, ['is_active'], 'is_active', 'TRUE', 'TRUE')},
-            {_expr(lease_columns, ['hidden_by_admin'], 'hidden_by_admin', 'FALSE', 'FALSE')},
-            {_expr(lease_columns, ['is_flagged'], 'is_flagged', 'FALSE', 'FALSE')},
-            {_expr(lease_columns, ['status'], 'status')},
-            {_expr(lease_columns, ['created_at'], 'created_at')}
-        FROM land_leases
-        ORDER BY {order_column} DESC NULLS LAST, id DESC
-    """
-
-    return {"leases": _fetch_all(query)}
+def get_admin_leases(_: dict = Depends(require_admin)):
+    lease_columns = [
+        "id",
+        "owner_name",
+        "contact_number",
+        "barangay",
+        "soil_type",
+        "area_hectares",
+        "price",
+        "description",
+        "status",
+        "created_at",
+        "updated_at",
+        "user_id",
+        "is_hidden",
+        "is_flagged",
+        "flag_reason",
+        "moderated_by",
+        "moderated_at",
+    ]
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        leases = _fetch_table_rows(cursor, "land_leases", lease_columns)
+    return {"leases": leases}
 
 
 @router.patch("/leases/{lease_id}/hide")
-def hide_lease(
-    lease_id: int,
-    request: LeaseModerationRequest,
-    admin_user_id: int = Depends(require_admin),
-):
-    if request.admin_id != admin_user_id:
-        raise HTTPException(status_code=403, detail="Admin mismatch.")
+def hide_lease(lease_id: int, admin_user: dict = Depends(require_admin)):
+    lease_columns = [
+        "id",
+        "owner_name",
+        "contact_number",
+        "barangay",
+        "soil_type",
+        "area_hectares",
+        "price",
+        "description",
+        "status",
+        "created_at",
+        "updated_at",
+        "user_id",
+        "is_hidden",
+        "is_flagged",
+        "flag_reason",
+        "moderated_by",
+        "moderated_at",
+    ]
 
-    lease_columns = _get_columns("land_leases")
-    if not lease_columns:
-        raise HTTPException(status_code=500, detail="land_leases table not found.")
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _fetch_record_by_id(cursor, "land_leases", lease_id, lease_columns)
+        existing = _get_columns(cursor, "land_leases")
 
-    updates: List[str] = []
-    if "hidden_by_admin" in lease_columns:
-        updates.append("hidden_by_admin = TRUE")
-    if "is_active" in lease_columns:
-        updates.append("is_active = FALSE")
-    if "status" in lease_columns:
-        updates.append("status = 'hidden'")
-    if "updated_at" in lease_columns:
-        updates.append("updated_at = NOW()")
+        set_parts = []
+        params: list[Any] = []
 
-    if not updates:
-        raise HTTPException(
-            status_code=500,
-            detail="No supported moderation columns found on land_leases table.",
+        if "status" in existing:
+            set_parts.append("status = 'hidden'")
+        if "is_hidden" in existing:
+            set_parts.append("is_hidden = TRUE")
+        if "moderated_by" in existing:
+            set_parts.append("moderated_by = %s")
+            params.append(admin_user["id"])
+        if "moderated_at" in existing:
+            set_parts.append("moderated_at = NOW()")
+        if "updated_at" in existing:
+            set_parts.append("updated_at = NOW()")
+
+        if not set_parts:
+            raise HTTPException(status_code=500, detail="land_leases table does not support hide fields")
+
+        return_columns = [column for column in lease_columns if column in existing]
+        params.append(lease_id)
+
+        cursor.execute(
+            f"""
+            UPDATE land_leases
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            RETURNING {', '.join(return_columns)};
+            """,
+            tuple(params),
         )
+        updated_lease = cursor.fetchone()
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"UPDATE land_leases SET {', '.join(updates)} WHERE id = %s", (lease_id,))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Lease not found.")
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as exc:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to hide lease: {exc}") from exc
-    finally:
-        conn.close()
-
-    return {"message": "Lease hidden successfully."}
+    return {"message": "Lease hidden successfully", "lease": dict(updated_lease)}
 
 
 @router.patch("/leases/{lease_id}/flag")
 def flag_lease(
     lease_id: int,
-    request: LeaseModerationRequest,
-    admin_user_id: int = Depends(require_admin),
+    payload: dict | None = Body(None),
+    reason: str | None = Query(None),
+    admin_user: dict = Depends(require_admin),
 ):
-    if request.admin_id != admin_user_id:
-        raise HTTPException(status_code=403, detail="Admin mismatch.")
+    flag_reason = (
+        _payload_text(payload, "reason")
+        or _payload_text(payload, "flag_reason")
+        or _clean_text(reason)
+        or "Flagged by admin"
+    )
 
-    lease_columns = _get_columns("land_leases")
-    if not lease_columns:
-        raise HTTPException(status_code=500, detail="land_leases table not found.")
+    lease_columns = [
+        "id",
+        "owner_name",
+        "contact_number",
+        "barangay",
+        "soil_type",
+        "area_hectares",
+        "price",
+        "description",
+        "status",
+        "created_at",
+        "updated_at",
+        "user_id",
+        "is_hidden",
+        "is_flagged",
+        "flag_reason",
+        "moderated_by",
+        "moderated_at",
+    ]
 
-    updates: List[str] = []
-    if "is_flagged" in lease_columns:
-        updates.append("is_flagged = TRUE")
-    if "status" in lease_columns:
-        updates.append("status = 'flagged'")
-    if "updated_at" in lease_columns:
-        updates.append("updated_at = NOW()")
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _fetch_record_by_id(cursor, "land_leases", lease_id, lease_columns)
+        existing = _get_columns(cursor, "land_leases")
 
-    if not updates:
-        raise HTTPException(
-            status_code=500,
-            detail="No supported moderation columns found on land_leases table.",
+        set_parts = []
+        params: list[Any] = []
+
+        if "status" in existing:
+            set_parts.append("status = 'flagged'")
+        if "is_flagged" in existing:
+            set_parts.append("is_flagged = TRUE")
+        if "flag_reason" in existing:
+            set_parts.append("flag_reason = %s")
+            params.append(flag_reason)
+        if "moderated_by" in existing:
+            set_parts.append("moderated_by = %s")
+            params.append(admin_user["id"])
+        if "moderated_at" in existing:
+            set_parts.append("moderated_at = NOW()")
+        if "updated_at" in existing:
+            set_parts.append("updated_at = NOW()")
+
+        if not set_parts:
+            raise HTTPException(status_code=500, detail="land_leases table does not support flag fields")
+
+        return_columns = [column for column in lease_columns if column in existing]
+        params.append(lease_id)
+
+        cursor.execute(
+            f"""
+            UPDATE land_leases
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            RETURNING {', '.join(return_columns)};
+            """,
+            tuple(params),
         )
+        updated_lease = cursor.fetchone()
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"UPDATE land_leases SET {', '.join(updates)} WHERE id = %s", (lease_id,))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Lease not found.")
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as exc:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to flag lease: {exc}") from exc
-    finally:
-        conn.close()
-
-    return {"message": "Lease flagged successfully."}
+    return {"message": "Lease flagged successfully", "lease": dict(updated_lease)}
 
 
 @router.patch("/leases/{lease_id}/restore")
-def restore_lease(
-    lease_id: int,
-    request: LeaseModerationRequest,
-    admin_user_id: int = Depends(require_admin),
-):
-    if request.admin_id != admin_user_id:
-        raise HTTPException(status_code=403, detail="Admin mismatch.")
+def restore_lease(lease_id: int, admin_user: dict = Depends(require_admin)):
+    lease_columns = [
+        "id",
+        "owner_name",
+        "contact_number",
+        "barangay",
+        "soil_type",
+        "area_hectares",
+        "price",
+        "description",
+        "status",
+        "created_at",
+        "updated_at",
+        "user_id",
+        "is_hidden",
+        "is_flagged",
+        "flag_reason",
+        "moderated_by",
+        "moderated_at",
+    ]
 
-    lease_columns = _get_columns("land_leases")
-    if not lease_columns:
-        raise HTTPException(status_code=500, detail="land_leases table not found.")
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _fetch_record_by_id(cursor, "land_leases", lease_id, lease_columns)
+        existing = _get_columns(cursor, "land_leases")
 
-    updates: List[str] = []
-    if "hidden_by_admin" in lease_columns:
-        updates.append("hidden_by_admin = FALSE")
-    if "is_flagged" in lease_columns:
-        updates.append("is_flagged = FALSE")
-    if "is_active" in lease_columns:
-        updates.append("is_active = TRUE")
-    if "status" in lease_columns:
-        updates.append("status = 'active'")
-    if "updated_at" in lease_columns:
-        updates.append("updated_at = NOW()")
+        set_parts = []
+        params: list[Any] = []
 
-    if not updates:
-        raise HTTPException(
-            status_code=500,
-            detail="No supported moderation columns found on land_leases table.",
+        if "status" in existing:
+            set_parts.append("status = 'active'")
+        if "is_hidden" in existing:
+            set_parts.append("is_hidden = FALSE")
+        if "is_flagged" in existing:
+            set_parts.append("is_flagged = FALSE")
+        if "flag_reason" in existing:
+            set_parts.append("flag_reason = NULL")
+        if "moderated_by" in existing:
+            set_parts.append("moderated_by = %s")
+            params.append(admin_user["id"])
+        if "moderated_at" in existing:
+            set_parts.append("moderated_at = NOW()")
+        if "updated_at" in existing:
+            set_parts.append("updated_at = NOW()")
+
+        if not set_parts:
+            raise HTTPException(status_code=500, detail="land_leases table does not support restore fields")
+
+        return_columns = [column for column in lease_columns if column in existing]
+        params.append(lease_id)
+
+        cursor.execute(
+            f"""
+            UPDATE land_leases
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            RETURNING {', '.join(return_columns)};
+            """,
+            tuple(params),
         )
+        updated_lease = cursor.fetchone()
 
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            cursor.execute(f"UPDATE land_leases SET {', '.join(updates)} WHERE id = %s", (lease_id,))
-            if cursor.rowcount == 0:
-                raise HTTPException(status_code=404, detail="Lease not found.")
-        conn.commit()
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as exc:
-        conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to restore lease: {exc}") from exc
-    finally:
-        conn.close()
-
-    return {"message": "Lease restored successfully."}
+    return {"message": "Lease restored successfully", "lease": dict(updated_lease)}
 
 
 @router.get("/productivity")
 def get_admin_productivity(_: dict = Depends(require_admin)):
+    productivity_columns = [
+        "id",
+        "user_id",
+        "soil_type",
+        "crop_name",
+        "area_hectares",
+        "yield_amount",
+        "notes",
+        "status",
+        "reviewed_by",
+        "reviewed_at",
+        "created_at",
+        "updated_at",
+    ]
     with get_cursor(dict_cursor=True) as (_, cursor):
-        cursor.execute(
-            """
-            SELECT id, user_id, soil_type, crop_name, area_hectares,
-                   yield_amount, notes, status, reviewed_by, reviewed_at,
-                   created_at, updated_at
-            FROM productivity_records
-            ORDER BY created_at DESC NULLS LAST, id DESC;
-            """
-        )
-        records = cursor.fetchall()
-
-    return {"productivity_records": _rows_to_dicts(records)}
+        records = _fetch_table_rows(cursor, "productivity_records", productivity_columns)
+    return {"productivity_records": records}
 
 
 @router.get("/soil-analysis-logs")
 def get_admin_soil_analysis_logs(_: dict = Depends(require_admin)):
+    log_columns = [
+        "id",
+        "user_id",
+        "lat",
+        "lng",
+        "soil_type",
+        "soil_name",
+        "barangay",
+        "created_at",
+        "predicted_soil_type",
+        "confidence",
+        "estimated_productivity_level",
+        "fertilizer_recommendation",
+        "soil_management_advice",
+        "crop_recommendations",
+        "original_file_name",
+        "image_path",
+        "updated_at",
+    ]
     with get_cursor(dict_cursor=True) as (_, cursor):
-        cursor.execute(
-            """
-            SELECT id, user_id, lat, lng, soil_type, soil_name, barangay,
-                   created_at, predicted_soil_type, confidence,
-                   estimated_productivity_level, fertilizer_recommendation,
-                   soil_management_advice, crop_recommendations,
-                   original_file_name, image_path, updated_at
-            FROM soil_analysis_logs
-            ORDER BY created_at DESC NULLS LAST, id DESC;
-            """
-        )
-        logs = cursor.fetchall()
-
-    return {"soil_analysis_logs": _rows_to_dicts(logs)}
+        logs = _fetch_table_rows(cursor, "soil_analysis_logs", log_columns)
+    return {"soil_analysis_logs": logs}
