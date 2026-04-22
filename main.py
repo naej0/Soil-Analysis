@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Header
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 import requests
