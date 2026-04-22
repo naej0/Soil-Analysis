@@ -27,6 +27,11 @@ def get_connection():
     )
 
 
+# Backward-compatible alias para sa mga old imports/calls
+def get_db_connection():
+    return get_connection()
+
+
 @contextmanager
 def get_cursor(dict_cursor=False):
     conn = get_connection()

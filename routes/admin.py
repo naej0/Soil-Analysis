@@ -183,70 +183,51 @@ def require_admin(admin_user_id: int = Depends(get_admin_user_id)) -> int:
 
 
 @router.get("/dashboard")
-def get_admin_dashboard(admin_user_id: int = Depends(require_admin)):
-    user_columns = _get_columns("users")
-    lease_columns = _get_columns("land_leases")
-    soil_log_columns = _get_columns("soil_analysis_logs")
-
-    total_users = _safe_count("users")
-    active_users = (
-        _safe_count("users", "COALESCE(is_active, TRUE) = TRUE")
-        if "is_active" in user_columns
-        else total_users
-    )
-    restricted_users = (
-        _safe_count("users", "COALESCE(is_restricted, FALSE) = TRUE")
-        if "is_restricted" in user_columns
-        else 0
-    )
-
-    total_lease_listings = _safe_count("land_leases")
-    if "is_active" in lease_columns:
-        active_lease_listings = _safe_count("land_leases", "COALESCE(is_active, TRUE) = TRUE")
-    elif "hidden_by_admin" in lease_columns:
-        active_lease_listings = _safe_count(
-            "land_leases", "COALESCE(hidden_by_admin, FALSE) = FALSE"
-        )
-    else:
-        active_lease_listings = total_lease_listings
-
-    flagged_lease_listings = (
-        _safe_count("land_leases", "COALESCE(is_flagged, FALSE) = TRUE")
-        if "is_flagged" in lease_columns
-        else 0
-    )
-
-    total_productivity_records = _safe_count("productivity_records")
-    total_soil_analyses = _safe_count("soil_analysis_logs")
-
-    common_soil_types: List[Dict[str, Any]] = []
-    soil_type_column = _pick(
-        soil_log_columns,
-        ["result_soil_type", "soil_type", "predicted_soil_type", "soil_name"],
-    )
-    if soil_type_column:
-        common_soil_types = _fetch_all(
-            f"""
-            SELECT {soil_type_column} AS soil_type, COUNT(*) AS count
-            FROM soil_analysis_logs
-            WHERE {soil_type_column} IS NOT NULL AND TRIM({soil_type_column}::text) <> ''
-            GROUP BY {soil_type_column}
-            ORDER BY count DESC, {soil_type_column} ASC
-            LIMIT 5
+def get_admin_dashboard(_: dict = Depends(require_admin)):
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        cursor.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM users) AS total_users,
+                (SELECT COUNT(*) FROM users WHERE COALESCE(is_active, TRUE) IS TRUE) AS active_users,
+                (SELECT COUNT(*) FROM users WHERE COALESCE(is_restricted, FALSE) IS TRUE) AS restricted_users,
+                (SELECT COUNT(*) FROM land_leases) AS total_lease_listings,
+                (SELECT COUNT(*) FROM land_leases WHERE LOWER(COALESCE(status, 'active')) = 'active') AS active_lease_listings,
+                (SELECT COUNT(*) FROM land_leases WHERE COALESCE(is_flagged, FALSE) IS TRUE OR LOWER(COALESCE(status, '')) = 'flagged') AS flagged_lease_listings,
+                (SELECT COUNT(*) FROM productivity_records) AS total_productivity_records,
+                (SELECT COUNT(*) FROM soil_analysis_logs) AS total_soil_analyses;
             """
         )
+        summary = dict(cursor.fetchone())
+
+        cursor.execute(
+            """
+            SELECT soil_type, COUNT(*) AS count
+            FROM soil_analysis_logs
+            WHERE soil_type IS NOT NULL AND TRIM(soil_type) <> ''
+            GROUP BY soil_type
+            ORDER BY count DESC, soil_type ASC
+            LIMIT 5;
+            """
+        )
+        common_rows = cursor.fetchall()
 
     return {
-        "admin_user_id": admin_user_id,
-        "total_users": total_users,
-        "active_users": active_users,
-        "restricted_users": restricted_users,
-        "total_lease_listings": total_lease_listings,
-        "active_lease_listings": active_lease_listings,
-        "flagged_lease_listings": flagged_lease_listings,
-        "total_productivity_records": total_productivity_records,
-        "total_soil_analyses": total_soil_analyses,
-        "common_soil_types": common_soil_types,
+        "total_users": summary["total_users"],
+        "active_users": summary["active_users"],
+        "restricted_users": summary["restricted_users"],
+        "total_lease_listings": summary["total_lease_listings"],
+        "active_lease_listings": summary["active_lease_listings"],
+        "flagged_lease_listings": summary["flagged_lease_listings"],
+        "total_productivity_records": summary["total_productivity_records"],
+        "total_soil_analyses": summary["total_soil_analyses"],
+        "common_soil_types": [
+            {
+                "soil_type": row["soil_type"],
+                "count": row["count"],
+            }
+            for row in common_rows
+        ],
     }
 
 
@@ -606,54 +587,36 @@ def restore_lease(
 
 
 @router.get("/productivity")
-def get_productivity(admin_user_id: int = Depends(require_admin)):
-    productivity_columns = _get_columns("productivity_records")
-    if not productivity_columns:
-        return {"productivity_records": []}
+def get_admin_productivity(_: dict = Depends(require_admin)):
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        cursor.execute(
+            """
+            SELECT id, user_id, soil_type, crop_name, area_hectares,
+                   yield_amount, notes, status, reviewed_by, reviewed_at,
+                   created_at, updated_at
+            FROM productivity_records
+            ORDER BY created_at DESC NULLS LAST, id DESC;
+            """
+        )
+        records = cursor.fetchall()
 
-    if "id" not in productivity_columns:
-        raise HTTPException(status_code=500, detail="productivity_records.id column is missing.")
-
-    order_column = "created_at" if "created_at" in productivity_columns else "id"
-
-    query = f"""
-        SELECT
-            id,
-            {_expr(productivity_columns, ['user_id'], 'user_id')},
-            {_expr(productivity_columns, ['farm_name', 'field_name'], 'farm_name')},
-            {_expr(productivity_columns, ['crop_name'], 'crop_name')},
-            {_expr(productivity_columns, ['soil_type'], 'soil_type')},
-            {_expr(productivity_columns, ['productivity_score', 'yield_value', 'yield_amount'], 'productivity_score')},
-            {_expr(productivity_columns, ['season_year', 'season'], 'season_year')},
-            {_expr(productivity_columns, ['created_at'], 'created_at')}
-        FROM productivity_records
-        ORDER BY {order_column} DESC NULLS LAST, id DESC
-    """
-
-    return {"productivity_records": _fetch_all(query)}
+    return {"productivity_records": _rows_to_dicts(records)}
 
 
 @router.get("/soil-analysis-logs")
-def get_soil_analysis_logs(admin_user_id: int = Depends(require_admin)):
-    log_columns = _get_columns("soil_analysis_logs")
-    if not log_columns:
-        return {"soil_analysis_logs": []}
+def get_admin_soil_analysis_logs(_: dict = Depends(require_admin)):
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        cursor.execute(
+            """
+            SELECT id, user_id, lat, lng, soil_type, soil_name, barangay,
+                   created_at, predicted_soil_type, confidence,
+                   estimated_productivity_level, fertilizer_recommendation,
+                   soil_management_advice, crop_recommendations,
+                   original_file_name, image_path, updated_at
+            FROM soil_analysis_logs
+            ORDER BY created_at DESC NULLS LAST, id DESC;
+            """
+        )
+        logs = cursor.fetchall()
 
-    if "id" not in log_columns:
-        raise HTTPException(status_code=500, detail="soil_analysis_logs.id column is missing.")
-
-    order_column = "created_at" if "created_at" in log_columns else "id"
-
-    query = f"""
-        SELECT
-            id,
-            {_expr(log_columns, ['user_id'], 'user_id')},
-            {_expr(log_columns, ['image_path', 'image_url', 'photo_path'], 'image_path')},
-            {_expr(log_columns, ['result_soil_type', 'soil_type', 'predicted_soil_type', 'soil_name'], 'result_soil_type')},
-            {_expr(log_columns, ['confidence_score', 'confidence'], 'confidence_score')},
-            {_expr(log_columns, ['created_at'], 'created_at')}
-        FROM soil_analysis_logs
-        ORDER BY {order_column} DESC NULLS LAST, id DESC
-    """
-
-    return {"soil_analysis_logs": _fetch_all(query)}
+    return {"soil_analysis_logs": _rows_to_dicts(logs)}
