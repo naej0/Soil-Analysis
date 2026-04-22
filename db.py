@@ -1,8 +1,9 @@
 import os
 from contextlib import contextmanager
+
 import psycopg2
-from contextlib import contextmanager
 from psycopg2.extras import RealDictCursor
+
 
 def get_connection():
     database_url = os.getenv("DATABASE_URL")
@@ -28,7 +29,7 @@ def get_connection():
 
 @contextmanager
 def get_cursor(dict_cursor=False):
-    conn = get_db_connection()
+    conn = get_connection()
     cursor = None
     try:
         if dict_cursor:
