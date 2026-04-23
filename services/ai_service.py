@@ -188,6 +188,7 @@ def validate_soil_photo(image_bytes: bytes):
     if cv2 is not None:
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
 
         face_cascade = _get_face_cascade()
         if face_cascade is not None:
@@ -200,27 +201,23 @@ def validate_soil_photo(image_bytes: bytes):
             #if len(faces) > 0:
                 #return False, "Person/face detected. Please upload a soil photo only."
 
-        hog = _get_people_hog()
-        if hog is not None:
-            try:
-                people_rects, weights = hog.detectMultiScale(
-                    bgr,
-                    winStride=(8, 8),
-                    padding=(8, 8),
-                    scale=1.05,
-                )
-                if len(people_rects) > 0:
-                    if len(weights) == 0 or float(np.max(weights)) >= 0.30:
-                        return False, "Person detected. Please upload a soil photo only."
-            except Exception:
-                pass
+        #hog = _get_people_hog()
+        #if hog is not None:
+            #     try:
+    #         people_rects, weights = hog.detectMultiScale(
+    #             bgr,
+    #             winStride=(8, 8),
+    #             padding=(8, 8),
+    #             scale=1.05,
+    #         )
+    #         if len(people_rects) > 0:
+    #             if len(weights) == 0 or float(np.max(weights)) >= 0.30:
+    #                 return False, "Person detected. Please upload a soil photo only."
+    #     except Exception:
+    #         pass
 
-                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
         # Loosened soil color ranges for brown / reddish / grayish soils
-        image = Image.open(BytesIO(image_bytes)).convert("RGB")
-        image_np = np.array(image)
-        hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
         
         soil_mask_1 = cv2.inRange(hsv, np.array([0, 10, 20]), np.array([35, 255, 255]))
         soil_mask_2 = cv2.inRange(hsv, np.array([0, 0, 20]), np.array([180, 120, 220]))
