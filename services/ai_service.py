@@ -240,7 +240,7 @@ def validate_soil_photo(image_bytes: bytes):
             return False, "The image contains too much vegetation. Please focus on bare soil."
 
         # Only reject if soil is clearly too little AND the image is dominated by non-soil colors
-        if soil_ratio < 0.20:
+        if soil_ratio < 0.10:
           return False, "Not enough soil area detected. Please capture a closer soil photo."
 
         # Much softer blur rule for real phone captures
@@ -282,7 +282,7 @@ def validate_soil_photo(image_bytes: bytes):
     if green_ratio > 0.60:
         return False, "The image contains too much vegetation. Please focus on bare soil."
 
-    if soil_ratio < 0.20:
+    if soil_ratio < 0.10:
         return False, "Not enough soil area detected. Please capture a closer soil photo."
 
     if texture_score < 4:
@@ -358,13 +358,13 @@ def predict_soil_from_file(file_name: str) -> dict:
         top2_conf = float(top_predictions[1]["confidence"]) if len(top_predictions) > 1 else 0.0
         confidence_gap = top1_conf - top2_conf
 
-        if top1_conf < 0.85:
+        if top1_conf < 0.65:
             raise HTTPException(
                 status_code=400,
                 detail="Image is not a confident soil match. Please upload a clearer close-up soil photo."
             )
 
-        if confidence_gap < 0.15:
+        if confidence_gap < 0.08:
             raise HTTPException(
                 status_code=400,
                 detail="Prediction is too ambiguous. Please upload a clearer close-up soil photo of soil only."
