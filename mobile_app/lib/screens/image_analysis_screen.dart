@@ -205,23 +205,33 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
           ),
         );
       }
+
     } on ApiException catch (error) {
       if (!mounted) return;
+
+      debugPrint('AI ERROR [$_analysisStage]: ${error.message}');
+
       _showMessage(
-        _buildAnalysisErrorMessage(
-          error.message,
-          stage: _analysisStage,
-        ),
-      );
-    } catch (_) {
-      if (!mounted) return;
-      _showMessage(
-        _buildAnalysisErrorMessage(
-          'Image analysis could not be completed right now. Please try again.',
-          stage: _analysisStage,
-        ),
-      );
-    } finally {
+         _buildAnalysisErrorMessage(
+            error.message,
+            stage: _analysisStage,
+    ),
+  );
+} catch (error, stackTrace) {
+  if (!mounted) return;
+
+  debugPrint('AI UNEXPECTED ERROR [$_analysisStage]: $error');
+  debugPrint('$stackTrace');
+
+  _showMessage(
+    _buildAnalysisErrorMessage(
+      error.toString(),
+      stage: _analysisStage,
+    ),
+  );
+}
+    
+    finally {
       _stopLongWaitTimer();
       if (mounted) {
         setState(() {
@@ -345,34 +355,61 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
     return 'Upload and Analyze';
   }
 
-  String _buildAnalysisErrorMessage(
-    String message, {
-    required _AnalysisStage stage,
-  }) {
-    final normalized = message.toLowerCase();
 
-    if (normalized.contains('could not connect to backend') ||
-        normalized.contains('network request failed')) {
-      if (stage == _AnalysisStage.uploading) {
-        return 'We could not upload the soil photo. Please check your internet connection and try again.';
-      }
-      if (stage == _AnalysisStage.classifying) {
-        return 'We lost connection while checking the soil type. Please try again.';
-      }
-      return 'We lost connection while preparing the soil advice. Please try again.';
-    }
+ String _buildAnalysisErrorMessage(
+  String message, {
+  required _AnalysisStage stage,
+}) {
+  final normalized = message.toLowerCase().trim();
 
+  if (normalized.contains('could not connect to backend') ||
+      normalized.contains('network request failed')) {
     if (stage == _AnalysisStage.uploading) {
-      return 'The soil photo could not be uploaded right now. Please try again.';
+      return 'We could not upload the soil photo. Please check your internet connection and try again.';
     }
     if (stage == _AnalysisStage.classifying) {
-      return 'We could not finish identifying the soil type right now. Please try again.';
+      return 'We lost connection while checking the soil type. Please try again.';
     }
-    if (stage == _AnalysisStage.preparingAdvice) {
-      return 'The soil type is ready, but the advice could not be completed right now.';
-    }
-    return message;
+    return 'We lost connection while preparing the soil advice. Please try again.';
   }
+
+  if (stage == _AnalysisStage.classifying) {
+    if (normalized.contains('not a confident soil match') ||
+        normalized.contains('clearer close-up soil photo') ||
+        normalized.contains('soil photo only')) {
+      return 'This image does not look like a valid soil photo. Please capture a closer soil-only image with good lighting.';
+    }
+
+    if (normalized.contains('uploaded image not found')) {
+      return 'The uploaded image could not be found on the server. Please upload and analyze again.';
+    }
+
+    if (normalized.contains('trained model') ||
+        normalized.contains('model file') ||
+        normalized.contains('labels')) {
+      return 'The soil prediction model is not ready on the server yet.';
+    }
+
+    return message.isNotEmpty
+        ? message
+        : 'We could not finish identifying the soil type right now. Please try again.';
+  }
+
+  if (stage == _AnalysisStage.uploading) {
+    return message.isNotEmpty
+        ? message
+        : 'The soil photo could not be uploaded right now. Please try again.';
+  }
+
+  if (stage == _AnalysisStage.preparingAdvice) {
+    return message.isNotEmpty
+        ? message
+        : 'The soil type is ready, but the advice could not be completed right now.';
+  }
+
+  return message;
+}
+
 
   String _buildRecommendationErrorMessage(String message) {
     final normalized = message.toLowerCase();
