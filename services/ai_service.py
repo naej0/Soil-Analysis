@@ -42,7 +42,7 @@ class ModelNotConfiguredError(Exception):
 BASE_DIR = Path(__file__).resolve().parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads"
 MODEL_DIR = BASE_DIR / "ml" / "models"
-TRAINED_MODEL_PATH = MODEL_DIR / "mobilenetv2_soil_model.keras"
+TRAINED_MODEL_PATH = MODEL_DIR / "best_model.keras"
 LABELS_PATH = MODEL_DIR / "labels.json"
 
 _MODEL_CACHE = {
