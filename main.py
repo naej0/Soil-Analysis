@@ -813,9 +813,11 @@ def create_lease(
             soil_type,
             area_hectares,
             price,
-            description
+            description,
+            status,
+            is_flagged
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id, owner_name, contact_number, barangay, soil_type,
                   area_hectares, price, description, status, created_at;
         """
@@ -827,7 +829,9 @@ def create_lease(
             soil_type,
             area_hectares,
             price,
-            description
+            description,
+            "active",
+            False
         ))
         lease = cursor.fetchone()
         conn.commit()
