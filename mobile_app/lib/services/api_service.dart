@@ -555,38 +555,6 @@ class ApiService {
     }
   }
 
-  Future<Map<String, dynamic>> _patchJson(
-    String path, {
-    Map<String, dynamic>? queryParameters,
-    Map<String, dynamic>? body,
-    Map<String, String>? headers,
-  }) async {
-    try {
-      final requestHeaders = <String, String>{
-        'Accept': 'application/json',
-        if (headers != null) ...headers,
-      };
-
-      String? encodedBody;
-      if (body != null) {
-        requestHeaders['Content-Type'] = 'application/json';
-        encodedBody = jsonEncode(body);
-      }
-
-      final response = await _client.patch(
-        _buildUri(path, queryParameters),
-        headers: requestHeaders,
-        body: encodedBody,
-      );
-      return _decodeResponse(response);
-    } on SocketException {
-      throw ApiException('Could not connect to backend at $_baseUrl');
-    } on http.ClientException {
-      throw const ApiException(
-        'Network request failed while contacting the backend.',
-      );
-    }
-  }
 
   List<Map<String, dynamic>> _mapList(dynamic value) {
     final items = value as List? ?? [];
