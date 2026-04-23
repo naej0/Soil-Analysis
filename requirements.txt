@@ -10,4 +10,4 @@ numpy
 matplotlib
 scikit-learn
 opencv-python-headless
-tensorflow
+tensorflow-cpu
