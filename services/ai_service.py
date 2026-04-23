@@ -2,6 +2,7 @@ from __future__ import annotations
 import os
 import io
 import cv2
+from matplotlib import image
 import numpy as np
 from PIL import Image, UnidentifiedImageError
 import json
@@ -217,6 +218,10 @@ def validate_soil_photo(image_bytes: bytes):
                 hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
         # Loosened soil color ranges for brown / reddish / grayish soils
+        image = Image.open(BytesIO(image_bytes)).convert("RGB")
+        image_np = np.array(image)
+        hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+        
         soil_mask_1 = cv2.inRange(hsv, np.array([0, 10, 20]), np.array([35, 255, 255]))
         soil_mask_2 = cv2.inRange(hsv, np.array([0, 0, 20]), np.array([180, 120, 220]))
         soil_mask_3 = cv2.inRange(hsv, np.array([160, 10, 20]), np.array([179, 255, 255]))
