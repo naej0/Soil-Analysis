@@ -95,6 +95,20 @@ Future <void> _openRestrictedUsers() async {
         builder: (_) => AdminLeasesScreen(
           apiService: widget.apiService,
           currentUser: widget.currentUser,
+          showActiveOnly: true,
+        ),
+      ),
+    );
+    await _loadDashboard();
+  }
+
+    Future<void> _openFlaggedLeases() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => AdminLeasesScreen(
+          apiService: widget.apiService,
+          currentUser: widget.currentUser,
+          showFlaggedOnly: true,
         ),
       ),
     );
@@ -239,7 +253,7 @@ Future <void> _openRestrictedUsers() async {
         label: 'Flagged Leases',
         value: '$flaggedLeases',
         icon: Icons.flag_outlined,
-        onTap: _openLeases,
+        onTap: _openFlaggedLeases,
       ),
       _AdminMetric(
         label: 'Productivity Records',
