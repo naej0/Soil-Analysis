@@ -5,6 +5,10 @@ import requests
 from psycopg2.extras import RealDictCursor
 import os
 import psycopg2
+import io
+import cv2
+import numpy as np
+from PIL import Image, UnidentifiedImageError
 from db import get_connection
 from routes.admin import router as admin_router
 from routes.ai import router as ai_router
@@ -1163,6 +1167,7 @@ def dashboard_by_location(lat: float, lng: float):
             cursor.close()
         if conn:
             conn.close()
+
 
 @app.get("/soil-analysis/support")
 def get_soil_analysis_support(

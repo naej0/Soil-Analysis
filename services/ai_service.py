@@ -1,3 +1,4 @@
+import io
 import importlib
 import json
 from datetime import datetime
@@ -6,8 +7,13 @@ from uuid import uuid4
 
 import numpy as np
 from fastapi import HTTPException, UploadFile
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from psycopg2.extras import Json
+
+try:
+    import cv2  # type: ignore
+except Exception:
+    cv2 = None
 
 from config import (
     ALLOWED_IMAGE_EXTENSIONS,
@@ -32,6 +38,9 @@ _MODEL_CACHE = {
     "model_mtime": None,
     "labels_mtime": None,
 }
+
+_FACE_CASCADE = None
+_HOG = None
 
 SOIL_DECISION_SUPPORT = {
     "Loam": {
@@ -61,6 +70,7 @@ SOIL_DECISION_SUPPORT = {
     },
 }
 
+
 def ensure_upload_dir() -> None:
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -68,13 +78,11 @@ def ensure_upload_dir() -> None:
 def validate_image_upload(upload_file: UploadFile) -> None:
     original_name = (upload_file.filename or "").strip()
     if not original_name:
-        raise HTTPException(status_code=400, detail="Uploaded file must include a file name")
+        raise HTTPException(status_code=400, detail="Uploaded file must include a file name.")
 
     content_type = (upload_file.content_type or "").strip().lower()
-    if content_type and content_type != "application/octet-stream" and not content_type.startswith(
-        "image/"
-    ):
-        raise HTTPException(status_code=400, detail="Uploaded file must be an image")
+    if content_type and content_type != "application/octet-stream" and not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Uploaded file must be an image.")
 
     extension = Path(original_name).suffix.lower()
     if extension not in ALLOWED_IMAGE_EXTENSIONS:
@@ -84,20 +92,212 @@ def validate_image_upload(upload_file: UploadFile) -> None:
         )
 
 
+def _read_upload_bytes(upload_file: UploadFile) -> bytes:
+    file_bytes = upload_file.file.read()
+
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    if len(file_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Uploaded file exceeds 10MB limit.")
+
+    return file_bytes
+
+
+def _load_rgb_from_bytes(image_bytes: bytes) -> np.ndarray:
+    try:
+        pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    except UnidentifiedImageError as exc:
+        raise HTTPException(status_code=400, detail="Invalid image file.") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Unable to read the uploaded image.") from exc
+
+    return np.array(pil_image)
+
+
+def _get_face_cascade():
+    global _FACE_CASCADE
+
+    if cv2 is None:
+        return None
+
+    if _FACE_CASCADE is None:
+        try:
+            cascade_path = str(Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml")
+            classifier = cv2.CascadeClassifier(cascade_path)
+            if classifier.empty():
+                return None
+            _FACE_CASCADE = classifier
+        except Exception:
+            return None
+
+    return _FACE_CASCADE
+
+
+def _get_people_hog():
+    global _HOG
+
+    if cv2 is None:
+        return None
+
+    if _HOG is None:
+        try:
+            hog = cv2.HOGDescriptor()
+            hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+            _HOG = hog
+        except Exception:
+            return None
+
+    return _HOG
+
+
+def _compute_texture_score(gray: np.ndarray) -> float:
+    if cv2 is not None:
+        return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+    gray_float = gray.astype("float32")
+    gy, gx = np.gradient(gray_float)
+    return float(np.mean((gx ** 2) + (gy ** 2)))
+
+
+def validate_soil_photo(image_bytes: bytes):
+    rgb = _load_rgb_from_bytes(image_bytes)
+
+    if rgb is None or rgb.size == 0:
+        return False, "Invalid image."
+
+    h, w, _ = rgb.shape
+    if h < 80 or w < 80:
+        return False, "Image is too small. Please upload a clearer soil photo."
+
+    if cv2 is not None:
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+        face_cascade = _get_face_cascade()
+        if face_cascade is not None:
+            faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(40, 40),
+            )
+            if len(faces) > 0:
+                return False, "Person/face detected. Please upload a soil photo only."
+
+        hog = _get_people_hog()
+        if hog is not None:
+            try:
+                people_rects, weights = hog.detectMultiScale(
+                    bgr,
+                    winStride=(8, 8),
+                    padding=(8, 8),
+                    scale=1.05,
+                )
+                if len(people_rects) > 0:
+                    if len(weights) == 0 or float(np.max(weights)) >= 0.30:
+                        return False, "Person detected. Please upload a soil photo only."
+            except Exception:
+                pass
+
+        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+
+        soil_mask_1 = cv2.inRange(hsv, np.array([5, 25, 20]), np.array([30, 255, 255]))
+        soil_mask_2 = cv2.inRange(hsv, np.array([0, 15, 10]), np.array([15, 255, 190]))
+        soil_mask_3 = cv2.inRange(hsv, np.array([0, 0, 20]), np.array([180, 90, 180]))
+        soil_mask = cv2.bitwise_or(cv2.bitwise_or(soil_mask_1, soil_mask_2), soil_mask_3)
+
+        green_mask = cv2.inRange(hsv, np.array([35, 40, 20]), np.array([95, 255, 255]))
+        blue_mask = cv2.inRange(hsv, np.array([96, 40, 20]), np.array([140, 255, 255]))
+
+        soil_ratio = float(np.count_nonzero(soil_mask)) / float(soil_mask.size)
+        green_ratio = float(np.count_nonzero(green_mask)) / float(green_mask.size)
+        blue_ratio = float(np.count_nonzero(blue_mask)) / float(blue_mask.size)
+        texture_score = _compute_texture_score(gray)
+
+        if blue_ratio > 0.30:
+            return False, "The image looks like sky, water, or another non-soil subject. Please upload soil only."
+
+        if green_ratio > 0.45:
+            return False, "The image contains too much vegetation. Please focus on bare soil."
+
+        if soil_ratio < 0.10 and (green_ratio > 0.15 or blue_ratio > 0.15):
+            return False, "Not enough soil area detected. Please capture a closer soil photo."
+
+        if soil_ratio < 0.08:
+            return False, "Not enough soil area detected. Please capture a closer soil photo."
+
+        if texture_score < 8:
+            return False, "Image is too blurry. Please retake a clearer soil photo."
+
+        return True, {
+            "soil_ratio": round(soil_ratio, 3),
+            "green_ratio": round(green_ratio, 3),
+            "blue_ratio": round(blue_ratio, 3),
+            "texture_score": round(texture_score, 2),
+        }
+
+    # Fallback if OpenCV is not available
+    r = rgb[:, :, 0].astype("float32")
+    g = rgb[:, :, 1].astype("float32")
+    b = rgb[:, :, 2].astype("float32")
+
+    soil_like_mask = (
+        (r > 25)
+        & (g > 15)
+        & (b > 5)
+        & (r >= (b * 0.90))
+        & (g >= (b * 0.70))
+    )
+    green_mask = (g > (r * 1.15)) & (g > (b * 1.15)) & (g > 40)
+    blue_mask = (b > (r * 1.15)) & (b > (g * 1.15)) & (b > 40)
+
+    soil_ratio = float(np.count_nonzero(soil_like_mask)) / float(soil_like_mask.size)
+    green_ratio = float(np.count_nonzero(green_mask)) / float(green_mask.size)
+    blue_ratio = float(np.count_nonzero(blue_mask)) / float(blue_mask.size)
+
+    gray = np.dot(rgb[..., :3], [0.299, 0.587, 0.114]).astype(np.uint8)
+    texture_score = _compute_texture_score(gray)
+
+    if blue_ratio > 0.35:
+        return False, "The image looks like sky, water, or another non-soil subject. Please upload soil only."
+
+    if green_ratio > 0.50:
+        return False, "The image contains too much vegetation. Please focus on bare soil."
+
+    if soil_ratio < 0.08 and (green_ratio > 0.15 or blue_ratio > 0.15):
+        return False, "Not enough soil area detected. Please capture a closer soil photo."
+
+    if texture_score < 6:
+        return False, "Image is too blurry. Please retake a clearer soil photo."
+
+    return True, {
+        "soil_ratio": round(soil_ratio, 3),
+        "green_ratio": round(green_ratio, 3),
+        "blue_ratio": round(blue_ratio, 3),
+        "texture_score": round(texture_score, 2),
+        "validation_mode": "fallback_without_opencv",
+    }
+
+
+def validate_soil_photo_or_raise(image_bytes: bytes) -> dict:
+    is_valid, result = validate_soil_photo(image_bytes)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
 def save_upload_file(upload_file: UploadFile) -> dict:
     ensure_upload_dir()
     validate_image_upload(upload_file)
+
+    file_bytes = _read_upload_bytes(upload_file)
+    validate_soil_photo_or_raise(file_bytes)
 
     original_name = Path((upload_file.filename or "").strip()).name or "soil-image"
     extension = Path(original_name).suffix.lower()
     safe_name = f"{uuid4().hex}{extension}"
     destination = UPLOAD_DIR / safe_name
-
-    file_bytes = upload_file.file.read()
-    if not file_bytes:
-        raise HTTPException(status_code=400, detail="Uploaded file is empty")
-    if len(file_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="Uploaded file exceeds 10MB limit")
 
     destination.write_bytes(file_bytes)
 
@@ -106,7 +306,7 @@ def save_upload_file(upload_file: UploadFile) -> dict:
             image.verify()
     except Exception as exc:
         destination.unlink(missing_ok=True)
-        raise HTTPException(status_code=400, detail="Uploaded file is not a valid image") from exc
+        raise HTTPException(status_code=400, detail="Uploaded file is not a valid image.") from exc
 
     return {
         "file_name": safe_name,
@@ -118,13 +318,14 @@ def save_upload_file(upload_file: UploadFile) -> dict:
 
 def predict_soil_from_file(file_name: str) -> dict:
     ensure_upload_dir()
+
     normalized_name = Path((file_name or "").strip()).name
     if not normalized_name:
-        raise HTTPException(status_code=400, detail="file_name is required")
+        raise HTTPException(status_code=400, detail="file_name is required.")
 
     image_path = UPLOAD_DIR / normalized_name
     if not image_path.exists():
-        raise HTTPException(status_code=404, detail="Uploaded image not found")
+        raise HTTPException(status_code=404, detail="Uploaded image not found.")
 
     try:
         inference_result = run_model_inference(image_path)
@@ -133,10 +334,11 @@ def predict_soil_from_file(file_name: str) -> dict:
     except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail="Prediction failed due to an internal inference error",
+            detail="Prediction failed due to an internal inference error.",
         ) from exc
 
     created_at = datetime.utcnow()
+
     log_ai_prediction_if_table_exists(
         file_name=normalized_name,
         prediction=inference_result["prediction"],
@@ -151,7 +353,7 @@ def predict_soil_from_file(file_name: str) -> dict:
         "confidence": inference_result["confidence"],
         "top_predictions": inference_result["top_predictions"],
         "supported_soil_types": list(SUPPORTED_SOIL_TYPES),
-        "message": "Prediction completed successfully",
+        "message": "Prediction completed successfully.",
         "created_at": created_at,
     }
 
@@ -160,11 +362,13 @@ def run_model_inference(image_path: Path) -> dict:
     bundle = load_model_bundle()
     model = bundle["model"]
     labels = bundle["labels"]
+
     image_size = tuple(labels["image_size"])
     class_names = labels["class_names"]
 
     image_array = load_image_array(image_path, image_size)
     predictions = model.predict(image_array, verbose=0)[0]
+
     top_indices = np.argsort(predictions)[::-1][:3]
     top_predictions = [
         {
@@ -173,6 +377,7 @@ def run_model_inference(image_path: Path) -> dict:
         }
         for index in top_indices
     ]
+
     return {
         "prediction": top_predictions[0]["soil_type"],
         "confidence": top_predictions[0]["confidence"],
@@ -259,6 +464,7 @@ def load_model_bundle() -> dict:
             f"No trained model file was found at {model_path}. "
             "Train the MobileNetV2 model first with: python ml/training/train_model.py"
         )
+
     if not labels_path.exists():
         raise ModelNotConfiguredError(
             f"No labels.json file was found at {labels_path}. "
@@ -274,6 +480,7 @@ def load_model_bundle() -> dict:
 
     model_mtime = model_path.stat().st_mtime
     labels_mtime = labels_path.stat().st_mtime
+
     if (
         _MODEL_CACHE["model"] is None
         or _MODEL_CACHE["model_path"] != str(model_path)
@@ -309,6 +516,7 @@ def load_model_bundle() -> dict:
         "model": _MODEL_CACHE["model"],
         "labels": _MODEL_CACHE["labels"],
     }
+
 
 def build_soil_decision_support(predicted_soil_type: str | None) -> dict:
     if not predicted_soil_type:
@@ -474,6 +682,7 @@ def save_soil_analysis_log(
             return inserted[0] if inserted else None
     except Exception:
         return None
+
 
 def log_ai_prediction_if_table_exists(
     file_name: str,
