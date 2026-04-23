@@ -11,3 +11,4 @@ matplotlib
 scikit-learn
 tensorflow-cpu
 opencv-python-headless
+tensorflow-gpu

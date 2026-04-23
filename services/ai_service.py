@@ -1,19 +1,22 @@
-from __future__ import annotations
-
+import os
+import io
+import cv2
 import json
+import uuid
+import shutil
+import importlib
+import numpy as np
+from PIL import Image, UnidentifiedImageError
+from fastapi import HTTPException, UploadFile
+from tensorflow.keras.models import load_model # type: ignore
+from __future__ import annotations
 from datetime import datetime, timezone
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
-
-import numpy as np
-from fastapi import HTTPException, UploadFile
-from PIL import Image, UnidentifiedImageError
 from psycopg2.extras import Json, RealDictCursor
-from tensorflow.keras.models import load_model
-
 from db import get_connection
 
 try:
@@ -211,11 +214,12 @@ def validate_soil_photo(image_bytes: bytes):
             except Exception:
                 pass
 
-        hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+                hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-        soil_mask_1 = cv2.inRange(hsv, np.array([5, 25, 20]), np.array([30, 255, 255]))
-        soil_mask_2 = cv2.inRange(hsv, np.array([0, 15, 10]), np.array([15, 255, 190]))
-        soil_mask_3 = cv2.inRange(hsv, np.array([0, 0, 20]), np.array([180, 90, 180]))
+        # Loosened soil color ranges for brown / reddish / grayish soils
+        soil_mask_1 = cv2.inRange(hsv, np.array([0, 10, 20]), np.array([35, 255, 255]))
+        soil_mask_2 = cv2.inRange(hsv, np.array([0, 0, 20]), np.array([180, 120, 220]))
+        soil_mask_3 = cv2.inRange(hsv, np.array([160, 10, 20]), np.array([179, 255, 255]))
         soil_mask = cv2.bitwise_or(cv2.bitwise_or(soil_mask_1, soil_mask_2), soil_mask_3)
 
         green_mask = cv2.inRange(hsv, np.array([35, 40, 20]), np.array([95, 255, 255]))
@@ -226,19 +230,19 @@ def validate_soil_photo(image_bytes: bytes):
         blue_ratio = float(np.count_nonzero(blue_mask)) / float(blue_mask.size)
         texture_score = _compute_texture_score(gray)
 
-        if blue_ratio > 0.30:
+        # Keep blocking obvious non-soil scenes
+        if blue_ratio > 0.45:
             return False, "The image looks like sky, water, or another non-soil subject. Please upload soil only."
 
-        if green_ratio > 0.45:
+        if green_ratio > 0.60:
             return False, "The image contains too much vegetation. Please focus on bare soil."
 
-        if soil_ratio < 0.10 and (green_ratio > 0.15 or blue_ratio > 0.15):
+        # Only reject if soil is clearly too little AND the image is dominated by non-soil colors
+        if soil_ratio < 0.03 and (green_ratio > 0.25 or blue_ratio > 0.25):
             return False, "Not enough soil area detected. Please capture a closer soil photo."
 
-        if soil_ratio < 0.08:
-            return False, "Not enough soil area detected. Please capture a closer soil photo."
-
-        if texture_score < 8:
+        # Much softer blur rule for real phone captures
+        if texture_score < 4:
             return False, "Image is too blurry. Please retake a clearer soil photo."
 
         return True, {
@@ -270,16 +274,16 @@ def validate_soil_photo(image_bytes: bytes):
     gray = np.dot(rgb[..., :3], [0.299, 0.587, 0.114]).astype(np.uint8)
     texture_score = _compute_texture_score(gray)
 
-    if blue_ratio > 0.35:
+    if blue_ratio > 0.45:
         return False, "The image looks like sky, water, or another non-soil subject. Please upload soil only."
 
-    if green_ratio > 0.50:
+    if green_ratio > 0.60:
         return False, "The image contains too much vegetation. Please focus on bare soil."
 
-    if soil_ratio < 0.08 and (green_ratio > 0.15 or blue_ratio > 0.15):
+    if soil_ratio < 0.03 and (green_ratio > 0.25 or blue_ratio > 0.25):
         return False, "Not enough soil area detected. Please capture a closer soil photo."
 
-    if texture_score < 6:
+    if texture_score < 4:
         return False, "Image is too blurry. Please retake a clearer soil photo."
 
     return True, {
