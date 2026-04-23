@@ -196,8 +196,8 @@ def validate_soil_photo(image_bytes: bytes):
                 minNeighbors=5,
                 minSize=(40, 40),
             )
-            if len(faces) > 0:
-                return False, "Person/face detected. Please upload a soil photo only."
+            #if len(faces) > 0:
+                #return False, "Person/face detected. Please upload a soil photo only."
 
         hog = _get_people_hog()
         if hog is not None:
