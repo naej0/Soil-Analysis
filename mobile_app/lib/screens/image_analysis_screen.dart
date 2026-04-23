@@ -68,11 +68,8 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
       }
 
       final pickedFile = await _picker.pickImage(
-        source: source,
-        imageQuality: 78,
-        maxWidth: 1600,
-        maxHeight: 1600,
-      );
+  source: source,
+);
 
       if (pickedFile == null) {
         return;
@@ -364,9 +361,11 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
 
   if (normalized.contains('could not connect to backend') ||
       normalized.contains('network request failed')) {
-    if (stage == _AnalysisStage.uploading) {
-      return 'We could not upload the soil photo. Please check your internet connection and try again.';
-    }
+    if (stage == _AnalysisStage.classifying) {
+    return message.trim().isNotEmpty
+      ? message
+      : 'We could not finish identifying the soil type right now. Please try again.';
+}
     if (stage == _AnalysisStage.classifying) {
       return 'We lost connection while checking the soil type. Please try again.';
     }
@@ -396,10 +395,10 @@ class _ImageAnalysisScreenState extends State<ImageAnalysisScreen> {
   }
 
   if (stage == _AnalysisStage.uploading) {
-    return message.isNotEmpty
-        ? message
-        : 'The soil photo could not be uploaded right now. Please try again.';
-  }
+  return message.trim().isNotEmpty
+      ? message
+      : 'The soil photo could not be uploaded right now. Please try again.';
+}
 
   if (stage == _AnalysisStage.preparingAdvice) {
     return message.isNotEmpty

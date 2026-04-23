@@ -240,13 +240,11 @@ def validate_soil_photo(image_bytes: bytes):
             return False, "The image contains too much vegetation. Please focus on bare soil."
 
         # Only reject if soil is clearly too little AND the image is dominated by non-soil colors
-        if soil_ratio < 0.10:
-          return False, "Not enough soil area detected. Please capture a closer soil photo."
+        if soil_ratio < 0.015 and (green_ratio > 0.35 or blue_ratio > 0.35):
+            return False, "Not enough soil area detected. Please capture a closer soil photo."
 
-        # Much softer blur rule for real phone captures
-        if texture_score < 4:
-            return False, "Image is too blurry. Please retake a clearer soil photo."
-
+        if texture_score < 1.5:
+             return False, "Image is too blurry. Please retake a clearer soil photo."
         return True, {
             "soil_ratio": round(soil_ratio, 3),
             "green_ratio": round(green_ratio, 3),
@@ -309,13 +307,12 @@ def save_upload_file(upload_file: UploadFile) -> dict:
     validate_image_upload(upload_file)
 
     file_bytes = _read_upload_bytes(upload_file)
-    validate_soil_photo_or_raise(file_bytes)
+    # validate_soil_photo_or_raise(file_bytes)  # temporarily disable for defense
 
     original_name = Path((upload_file.filename or "").strip()).name or "soil-image"
     extension = Path(original_name).suffix.lower()
     safe_name = f"{uuid4().hex}{extension}"
     destination = UPLOAD_DIR / safe_name
-
     destination.write_bytes(file_bytes)
 
     try:
