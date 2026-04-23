@@ -1,14 +1,20 @@
-import io
-import importlib
+from __future__ import annotations
+
 import json
-from datetime import datetime
+from datetime import datetime, timezone
+from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
+from typing import Optional
 from uuid import uuid4
 
 import numpy as np
 from fastapi import HTTPException, UploadFile
 from PIL import Image, UnidentifiedImageError
-from psycopg2.extras import Json
+from psycopg2.extras import Json, RealDictCursor
+from tensorflow.keras.models import load_model
+
+from db import get_connection
 
 try:
     import cv2  # type: ignore
@@ -29,6 +35,11 @@ from ml.utils.preprocess import load_image_array
 class ModelNotConfiguredError(Exception):
     pass
 
+BASE_DIR = Path(__file__).resolve().parent.parent
+UPLOAD_DIR = BASE_DIR / "uploads"
+MODEL_DIR = BASE_DIR / "ml" / "models"
+TRAINED_MODEL_PATH = MODEL_DIR / "mobilenetv2_soil_model.keras"
+LABELS_PATH = MODEL_DIR / "labels.json"
 
 _MODEL_CACHE = {
     "model": None,
