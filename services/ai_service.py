@@ -185,80 +185,113 @@ def validate_soil_photo(image_bytes: bytes):
     if h < 80 or w < 80:
         return False, "Image is too small. Please upload a clearer soil photo."
 
-    if cv2 is None:
-        return True, "Valid soil photo."
+    if cv2 is not None:
+        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
 
-    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
-    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        face_cascade = _get_face_cascade()
+        if face_cascade is not None:
+            faces = face_cascade.detectMultiScale(
+                gray,
+                scaleFactor=1.1,
+                minNeighbors=5,
+                minSize=(40, 40),
+            )
+            #if len(faces) > 0:
+                #return False, "Person/face detected. Please upload a soil photo only."
 
-    brown_mask = cv2.inRange(hsv, np.array([5, 25, 20]), np.array([30, 255, 255]))
-    dark_soil_mask = cv2.inRange(hsv, np.array([0, 10, 5]), np.array([35, 255, 150]))
-    gray_soil_mask = cv2.inRange(hsv, np.array([0, 0, 15]), np.array([180, 70, 180]))
+        #hog = _get_people_hog()
+        #if hog is not None:
+            #     try:
+    #         people_rects, weights = hog.detectMultiScale(
+    #             bgr,
+    #             winStride=(8, 8),
+    #             padding=(8, 8),
+    #             scale=1.05,
+    #         )
+    #         if len(people_rects) > 0:
+    #             if len(weights) == 0 or float(np.max(weights)) >= 0.30:
+    #                 return False, "Person detected. Please upload a soil photo only."
+    #     except Exception:
+    #         pass
 
-    soil_mask = cv2.bitwise_or(
-        cv2.bitwise_or(brown_mask, dark_soil_mask),
-        gray_soil_mask,
+
+        # Loosened soil color ranges for brown / reddish / grayish soils
+        
+        soil_mask_1 = cv2.inRange(hsv, np.array([0, 10, 20]), np.array([35, 255, 255]))
+        soil_mask_2 = cv2.inRange(hsv, np.array([0, 0, 20]), np.array([180, 120, 220]))
+        soil_mask_3 = cv2.inRange(hsv, np.array([160, 10, 20]), np.array([179, 255, 255]))
+        soil_mask = cv2.bitwise_or(cv2.bitwise_or(soil_mask_1, soil_mask_2), soil_mask_3)
+
+        green_mask = cv2.inRange(hsv, np.array([35, 40, 20]), np.array([95, 255, 255]))
+        blue_mask = cv2.inRange(hsv, np.array([96, 40, 20]), np.array([140, 255, 255]))
+
+        soil_ratio = float(np.count_nonzero(soil_mask)) / float(soil_mask.size)
+        green_ratio = float(np.count_nonzero(green_mask)) / float(green_mask.size)
+        blue_ratio = float(np.count_nonzero(blue_mask)) / float(blue_mask.size)
+        texture_score = _compute_texture_score(gray)
+
+        # Keep blocking obvious non-soil scenes
+        if blue_ratio > 0.45:
+            return False, "The image looks like sky, water, or another non-soil subject. Please upload soil only."
+
+        if green_ratio > 0.60:
+            return False, "The image contains too much vegetation. Please focus on bare soil."
+
+        # Only reject if soil is clearly too little AND the image is dominated by non-soil colors
+        if soil_ratio < 0.015 and (green_ratio > 0.35 or blue_ratio > 0.35):
+            return False, "Not enough soil area detected. Please capture a closer soil photo."
+
+        if texture_score < 1.5:
+             return False, "Image is too blurry. Please retake a clearer soil photo."
+        return True, {
+            "soil_ratio": round(soil_ratio, 3),
+            "green_ratio": round(green_ratio, 3),
+            "blue_ratio": round(blue_ratio, 3),
+            "texture_score": round(texture_score, 2),
+        }
+
+    # Fallback if OpenCV is not available
+    r = rgb[:, :, 0].astype("float32")
+    g = rgb[:, :, 1].astype("float32")
+    b = rgb[:, :, 2].astype("float32")
+
+    soil_like_mask = (
+        (r > 25)
+        & (g > 15)
+        & (b > 5)
+        & (r >= (b * 0.90))
+        & (g >= (b * 0.70))
     )
+    green_mask = (g > (r * 1.15)) & (g > (b * 1.15)) & (g > 40)
+    blue_mask = (b > (r * 1.15)) & (b > (g * 1.15)) & (b > 40)
 
-    green_mask = cv2.inRange(hsv, np.array([35, 35, 20]), np.array([95, 255, 255]))
-    blue_mask = cv2.inRange(hsv, np.array([96, 35, 20]), np.array([140, 255, 255]))
-    white_mask = cv2.inRange(hsv, np.array([0, 0, 185]), np.array([180, 45, 255]))
-
-    y1, y2 = h // 6, (5 * h) // 6
-    x1, x2 = w // 6, (5 * w) // 6
-
-    center_soil_mask = soil_mask[y1:y2, x1:x2]
-    center_white_mask = white_mask[y1:y2, x1:x2]
-
-    soil_ratio = float(np.count_nonzero(soil_mask)) / float(soil_mask.size)
-    center_soil_ratio = float(np.count_nonzero(center_soil_mask)) / float(center_soil_mask.size)
+    soil_ratio = float(np.count_nonzero(soil_like_mask)) / float(soil_like_mask.size)
     green_ratio = float(np.count_nonzero(green_mask)) / float(green_mask.size)
     blue_ratio = float(np.count_nonzero(blue_mask)) / float(blue_mask.size)
-    white_ratio = float(np.count_nonzero(white_mask)) / float(white_mask.size)
-    center_white_ratio = float(np.count_nonzero(center_white_mask)) / float(center_white_mask.size)
 
+    gray = np.dot(rgb[..., :3], [0.299, 0.587, 0.114]).astype(np.uint8)
     texture_score = _compute_texture_score(gray)
 
-    edges = cv2.Canny(gray, 80, 160)
-    edge_ratio = float(np.count_nonzero(edges)) / float(edges.size)
+    if blue_ratio > 0.45:
+        return False, "The image looks like sky, water, or another non-soil subject. Please upload soil only."
 
-    lines = cv2.HoughLinesP(
-        edges,
-        1,
-        np.pi / 180,
-        threshold=80,
-        minLineLength=max(60, min(h, w) // 4),
-        maxLineGap=10,
-    )
-    long_line_count = 0 if lines is None else len(lines)
+    if green_ratio > 0.60:
+        return False, "The image contains too much vegetation. Please focus on bare soil."
 
-    if green_ratio > 0.35:
-        return False, "The image contains too much vegetation. Please capture soil only."
+    if soil_ratio < 0.10:
+        return False, "Not enough soil area detected. Please capture a closer soil photo."
 
-    if blue_ratio > 0.30:
-        return False, "The image contains too much sky or non-soil background. Please capture soil only."
-
-    if white_ratio > 0.35 and center_white_ratio > 0.25:
-        return False, "The image looks too bright or contains a screen/paper. Please capture soil only."
-
-    if long_line_count >= 8 and center_soil_ratio < 0.25:
-        return False, "The image appears to contain man-made objects. Please capture a close-up soil photo only."
-
-    if soil_ratio < 0.12 or center_soil_ratio < 0.16:
-        return False, "This image does not look like a valid soil photo. Please capture a closer soil-only image."
-
-    if texture_score < 1.5 and edge_ratio < 0.02:
-        return False, "The image looks too smooth to be soil. Please capture a closer soil photo with better lighting."
+    if texture_score < 4:
+        return False, "Image is too blurry. Please retake a clearer soil photo."
 
     return True, {
         "soil_ratio": round(soil_ratio, 3),
-        "center_soil_ratio": round(center_soil_ratio, 3),
         "green_ratio": round(green_ratio, 3),
         "blue_ratio": round(blue_ratio, 3),
-        "white_ratio": round(white_ratio, 3),
         "texture_score": round(texture_score, 2),
-        "edge_ratio": round(edge_ratio, 3),
-        "long_line_count": long_line_count,
+        "validation_mode": "fallback_without_opencv",
     }
 
 
@@ -309,39 +342,9 @@ def predict_soil_from_file(file_name: str) -> dict:
         raise HTTPException(status_code=404, detail="Uploaded image not found.")
 
     try:
-        file_bytes = image_path.read_bytes()
-
-        is_valid_soil, validation_message = validate_soil_photo(file_bytes)
-        if not is_valid_soil:
-            raise HTTPException(status_code=400, detail=validation_message)
-
         inference_result = run_model_inference(image_path)
-
-        top_predictions = inference_result.get("top_predictions") or []
-        top1_confidence = float(inference_result.get("confidence", 0.0))
-        top2_confidence = (
-            float(top_predictions[1]["confidence"])
-            if len(top_predictions) > 1
-            else 0.0
-        )
-        confidence_margin = top1_confidence - top2_confidence
-
-        if top1_confidence < 0.40:
-            raise HTTPException(
-                status_code=400,
-                detail="Image is not a confident soil match. Please upload a clearer close-up soil photo.",
-            )
-
-        if confidence_margin < 0.04:
-            raise HTTPException(
-                status_code=400,
-                detail="Prediction is too ambiguous. Please upload a clearer close-up soil photo of soil only.",
-            )
-
     except ModelNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except HTTPException:
-        raise
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -367,6 +370,7 @@ def predict_soil_from_file(file_name: str) -> dict:
         "message": "Prediction completed successfully.",
         "created_at": created_at,
     }
+
 
 def run_model_inference(image_path: Path) -> dict:
     bundle = load_model_bundle()
