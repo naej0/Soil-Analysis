@@ -77,6 +77,18 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     await _loadDashboard();
   }
 
+Future <void> _openRestrictedUsers() async {
+  await Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => AdminUsersScreen(
+        apiService: widget.apiService,
+        currentUser: widget.currentUser,
+        restrictedOnly: true,
+      ),
+    ),
+  );
+}
+
   Future<void> _openLeases() async {
     await Navigator.of(context).push(
       MaterialPageRoute(
@@ -215,7 +227,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         label: 'Restricted Users',
         value: '$restrictedUsers',
         icon: Icons.block_outlined,
-        onTap: _openUsers,
+        onTap: _openRestrictedUsers,
       ),
       _AdminMetric(
         label: 'Active Leases',
@@ -457,6 +469,8 @@ class _AdminMetricCard extends StatelessWidget {
   const _AdminMetricCard({required this.metric});
 
   final _AdminMetric metric;
+
+
 
   @override
   Widget build(BuildContext context) {
