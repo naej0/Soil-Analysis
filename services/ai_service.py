@@ -1,15 +1,15 @@
+from __future__ import annotations
 import os
 import io
 import cv2
+import numpy as np
+from PIL import Image, UnidentifiedImageError
 import json
 import uuid
 import shutil
 import importlib
-import numpy as np
-from PIL import Image, UnidentifiedImageError
 from fastapi import HTTPException, UploadFile
 from tensorflow.keras.models import load_model # type: ignore
-from __future__ import annotations
 from datetime import datetime, timezone
 from functools import lru_cache
 from io import BytesIO
