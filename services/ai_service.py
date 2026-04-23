@@ -240,8 +240,8 @@ def validate_soil_photo(image_bytes: bytes):
             return False, "The image contains too much vegetation. Please focus on bare soil."
 
         # Only reject if soil is clearly too little AND the image is dominated by non-soil colors
-        if soil_ratio < 0.03 and (green_ratio > 0.25 or blue_ratio > 0.25):
-            return False, "Not enough soil area detected. Please capture a closer soil photo."
+        if soil_ratio < 0.20:
+          return False, "Not enough soil area detected. Please capture a closer soil photo."
 
         # Much softer blur rule for real phone captures
         if texture_score < 4:
@@ -282,7 +282,7 @@ def validate_soil_photo(image_bytes: bytes):
     if green_ratio > 0.60:
         return False, "The image contains too much vegetation. Please focus on bare soil."
 
-    if soil_ratio < 0.03 and (green_ratio > 0.25 or blue_ratio > 0.25):
+    if soil_ratio < 0.20:
         return False, "Not enough soil area detected. Please capture a closer soil photo."
 
     if texture_score < 4:
@@ -345,14 +345,40 @@ def predict_soil_from_file(file_name: str) -> dict:
         raise HTTPException(status_code=404, detail="Uploaded image not found.")
 
     try:
+        image_bytes = image_path.read_bytes()
+
+        is_valid, validation_message = validate_soil_photo(image_bytes)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=validation_message)
+
         inference_result = run_model_inference(image_path)
+
+        top_predictions = inference_result.get("top_predictions", [])
+        top1_conf = float(inference_result.get("confidence", 0.0))
+        top2_conf = float(top_predictions[1]["confidence"]) if len(top_predictions) > 1 else 0.0
+        confidence_gap = top1_conf - top2_conf
+
+        if top1_conf < 0.85:
+            raise HTTPException(
+                status_code=400,
+                detail="Image is not a confident soil match. Please upload a clearer close-up soil photo."
+            )
+
+        if confidence_gap < 0.15:
+            raise HTTPException(
+                status_code=400,
+                detail="Prediction is too ambiguous. Please upload a clearer close-up soil photo of soil only."
+            )
+
     except ModelNotConfiguredError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(
-            status_code=500,
-            detail="Prediction failed due to an internal inference error.",
-        ) from exc
+        status_code=500,
+        detail="Prediction failed due to an internal inference error.",
+    ) from exc
 
     created_at = datetime.utcnow()
 
