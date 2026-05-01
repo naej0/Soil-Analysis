@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
@@ -630,17 +631,35 @@ _ALLOWED_DURATION_UNITS = {
 
 
 def _normalize_duration_unit(duration_unit: str | None) -> str:
-    unit = str(duration_unit or "months").strip().lower()
+    raw_value = str(duration_unit or "months").strip().lower()
 
-    # Remove common characters accidentally included from Swagger/mobile input
-    unit = unit.replace('"', "").replace("'", "").replace(".", "").replace(",", "").strip()
+    # Remove hidden characters, spaces, quotes, dots, dashes, etc.
+    normalized_key = re.sub(r"[^a-z]", "", raw_value)
 
-    normalized = _ALLOWED_DURATION_UNITS.get(unit)
+    unit_map = {
+        "day": "days",
+        "days": "days",
+        "daily": "days",
+
+        "month": "months",
+        "months": "months",
+        "monthly": "months",
+        "mo": "months",
+        "mos": "months",
+
+        "year": "years",
+        "years": "years",
+        "yearly": "years",
+        "yr": "years",
+        "yrs": "years",
+    }
+
+    normalized = unit_map.get(normalized_key)
 
     if normalized is None:
         raise HTTPException(
             status_code=422,
-            detail="duration_unit must be one of: day, days, month, months, year, years.",
+            detail=f"Invalid duration_unit received: '{duration_unit}'. Use only: day, days, month, months, year, or years."
         )
 
     return normalized
