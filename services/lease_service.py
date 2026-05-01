@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import calendar
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
@@ -613,18 +613,27 @@ def _normalize_soil_type(soil_type: str) -> str:
     return cleaned
 
 
-def _normalize_duration_unit(duration_unit: str) -> str:
-    normalized = duration_unit.strip().lower()
-    if normalized in {"day", "days"}:
-        return "days"
-    if normalized in {"month", "months"}:
-        return "months"
-    if normalized in {"year", "years"}:
-        return "years"
-    raise HTTPException(
-        status_code=422,
-        detail="duration_unit must be one of: day, days, month, months, year, years.",
-    )
+def _normalize_duration_unit(duration_unit: str | None) -> str:
+    unit = (duration_unit or "month").strip().lower()
+
+    unit_map = {
+        "day": "days",
+        "days": "days",
+        "month": "months",
+        "months": "months",
+        "year": "years",
+        "years": "years",
+    }
+
+    normalized = unit_map.get(unit)
+
+    if normalized is None:
+        raise HTTPException(
+            status_code=422,
+            detail="duration_unit must be one of: day, days, month, months, year, years."
+        )
+
+    return normalized
 
 
 def _convert_duration_to_months(duration_value: Decimal, duration_unit: str) -> Decimal:
@@ -640,31 +649,40 @@ def _convert_duration_to_months(duration_value: Decimal, duration_unit: str) -> 
     )
 
 
-def _compute_rental_end_date(
-    rental_start_date: date,
-    duration_value: Decimal,
-    duration_unit: str,
-) -> date:
-    if duration_unit == "days":
-        return rental_start_date + timedelta(days=_rounded_int(duration_value))
-    if duration_unit == "months":
-        return _add_months(rental_start_date, duration_value)
-    if duration_unit == "years":
-        return _add_years(rental_start_date, duration_value)
+def _compute_rental_end_date(rental_start_date: date, duration_value, duration_unit: str | None) -> date:
+    unit = _normalize_duration_unit(duration_unit)
+
+    try:
+        value = Decimal(str(duration_value or 1))
+    except Exception:
+        raise HTTPException(status_code=422, detail="duration_value must be a valid number.")
+
+    if value <= 0:
+        raise HTTPException(status_code=422, detail="duration_value must be greater than zero.")
+
+    whole_value = int(value)
+
+    if unit == "days":
+        return rental_start_date + timedelta(days=whole_value)
+
+    if unit == "months":
+        return _add_months(rental_start_date, whole_value)
+
+    if unit == "years":
+        return _add_months(rental_start_date, whole_value * 12)
+
     raise HTTPException(
         status_code=422,
-        detail="duration_unit must be one of: day, days, month, months, year, years.",
+        detail="duration_unit must be one of: day, days, month, months, year, years."
     )
 
 
-def _add_months(start_date: date, months: Decimal) -> date:
-    if months == months.to_integral_value():
-        total_month = start_date.month - 1 + int(months)
-        year = start_date.year + total_month // 12
-        month = total_month % 12 + 1
-        day = min(start_date.day, calendar.monthrange(year, month)[1])
-        return date(year, month, day)
-    return start_date + timedelta(days=_rounded_int(months * Decimal("30")))
+def _add_months(start_date: date, months: int) -> date:
+    month_index = start_date.month - 1 + months
+    year = start_date.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start_date.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
 
 
 def _add_years(start_date: date, years: Decimal) -> date:
