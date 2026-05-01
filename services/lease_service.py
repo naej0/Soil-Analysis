@@ -25,6 +25,7 @@ MEDIA_EXTENSION_MAP = {
 }
 
 
+
 def create_lease(payload) -> dict:
     with get_cursor(dict_cursor=True) as (_, cursor):
         soil_type = _normalize_soil_type(payload.soil_type)
@@ -612,37 +613,51 @@ def _normalize_soil_type(soil_type: str) -> str:
             return supported_soil_type
     return cleaned
 
+_ALLOWED_DURATION_UNITS = {
+    "day": "days",
+    "days": "days",
+    "daily": "days",
+    "month": "months",
+    "months": "months",
+    "monthly": "months",
+    "month(s)": "months",
+    "year": "years",
+    "years": "years",
+    "yearly": "years",
+    "annual": "years",
+    "annually": "years",
+}
+
 
 def _normalize_duration_unit(duration_unit: str | None) -> str:
-    unit = (duration_unit or "month").strip().lower()
+    unit = str(duration_unit or "months").strip().lower()
 
-    unit_map = {
-        "day": "days",
-        "days": "days",
-        "month": "months",
-        "months": "months",
-        "year": "years",
-        "years": "years",
-    }
+    # Remove common characters accidentally included from Swagger/mobile input
+    unit = unit.replace('"', "").replace("'", "").replace(".", "").replace(",", "").strip()
 
-    normalized = unit_map.get(unit)
+    normalized = _ALLOWED_DURATION_UNITS.get(unit)
 
     if normalized is None:
         raise HTTPException(
             status_code=422,
-            detail="duration_unit must be one of: day, days, month, months, year, years."
+            detail="duration_unit must be one of: day, days, month, months, year, years.",
         )
 
     return normalized
 
 
-def _convert_duration_to_months(duration_value: Decimal, duration_unit: str) -> Decimal:
-    if duration_unit == "days":
+def _convert_duration_to_months(duration_value: Decimal, duration_unit: str | None) -> Decimal:
+    unit = _normalize_duration_unit(duration_unit)
+
+    if unit == "days":
         return duration_value / Decimal("30")
-    if duration_unit == "months":
+
+    if unit == "months":
         return duration_value
-    if duration_unit == "years":
+
+    if unit == "years":
         return duration_value * Decimal("12")
+
     raise HTTPException(
         status_code=422,
         detail="duration_unit must be one of: day, days, month, months, year, years.",
@@ -654,8 +669,8 @@ def _compute_rental_end_date(rental_start_date: date, duration_value, duration_u
 
     try:
         value = Decimal(str(duration_value or 1))
-    except Exception:
-        raise HTTPException(status_code=422, detail="duration_value must be a valid number.")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="duration_value must be a valid number.") from exc
 
     if value <= 0:
         raise HTTPException(status_code=422, detail="duration_value must be greater than zero.")
@@ -673,7 +688,7 @@ def _compute_rental_end_date(rental_start_date: date, duration_value, duration_u
 
     raise HTTPException(
         status_code=422,
-        detail="duration_unit must be one of: day, days, month, months, year, years."
+        detail="duration_unit must be one of: day, days, month, months, year, years.",
     )
 
 
