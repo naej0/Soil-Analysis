@@ -1,6 +1,6 @@
 from datetime import date
-
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile
+from typing import Optional
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, requests
 
 from models.common_models import ErrorResponse
 from models.lease_models import (
@@ -27,60 +27,61 @@ router = APIRouter(tags=["Land Leases"])
     "/leases",
     response_model=LeaseCreateResponse,
     summary="Create a land lease listing",
-    description="Creates a land lease listing, computes pricing, and generates a lease contract.",
+    description="Creates a land lease record using the existing land_leases table, computed pricing, and an auto-generated contract.",
     responses={
         400: {"model": ErrorResponse, "description": "Missing price rate or invalid lease data."},
         422: {"model": ErrorResponse, "description": "Missing or invalid request fields."},
     },
 )
-def create_lease_route(
-    payload: LeaseCreateRequest | None = Body(None),
-    owner_name: str | None = Query(None),
-    contact_number: str | None = Query(None),
-    barangay: str | None = Query(None),
-    soil_type: str | None = Query(None),
-    area_hectares: float | None = Query(None),
-    area_sqm: float | None = Query(None),
-    price: float | None = Query(None),
-    description: str | None = Query(None),
-    rental_start_date: date | None = Query(None),
-    duration_value: float | None = Query(None),
-    duration_unit: str | None = Query(None),
-    location_description: str | None = Query(None),
-    lease_title: str | None = Query(None),
-    user_id: int | None = Query(None),
+async def create_lease_route(
+    owner_name: str = Query(...),
+    contact_number: str = Query(...),
+    barangay: str = Query(...),
+    soil_type: str = Query(...),
+    area_hectares: Optional[float] = Query(None),
+    area_sqm: Optional[float] = Query(None),
+    price: Optional[float] = Query(None),
+    description: Optional[str] = Query(None),
+    rental_start_date: date = Query(...),
+    duration_value: float = Query(1),
+    duration_unit: str = Query(
+        "months",
+        description="Allowed values: day, days, month, months, year, years",
+    ),
+    location_description: Optional[str] = Query(None),
+    lease_title: Optional[str] = Query(None),
+    user_id: Optional[int] = Query(None),
 ):
-    if payload is None:
-        required_values = [
-            owner_name,
-            contact_number,
-            barangay,
-            soil_type,
-            description,
-        ]
-        if any(value is None for value in required_values):
-            raise HTTPException(status_code=422, detail="Provide JSON body or query parameters.")
+    payload_data = {
+        "owner_name": owner_name,
+        "contact_number": contact_number,
+        "barangay": barangay,
+        "soil_type": soil_type,
+        "rental_start_date": rental_start_date,
+        "duration_value": duration_value,
+        "duration_unit": duration_unit,
+    }
 
-        payload = LeaseCreateRequest(
-            owner_name=owner_name,
-            contact_number=contact_number,
-            barangay=barangay,
-            soil_type=soil_type,
-            area_hectares=area_hectares,
-            area_sqm=area_sqm,
-            price=price,
-            description=description,
-            rental_start_date=rental_start_date,
-            duration_value=duration_value,
-            duration_unit=duration_unit,
-            location_description=location_description,
-            lease_title=lease_title,
-            user_id=user_id,
-        )
+    optional_fields = {
+        "area_hectares": area_hectares,
+        "area_sqm": area_sqm,
+        "price": price,
+        "description": description,
+        "location_description": location_description,
+        "lease_title": lease_title,
+        "user_id": user_id,
+    }
+
+    for key, value in optional_fields.items():
+        if value is not None:
+            payload_data[key] = value
+
+    payload = _build_payload(payload_data)
+    lease = create_lease(payload, media_files=[])
 
     return {
         "message": "Land lease created successfully",
-        "lease": create_lease(payload),
+        "lease": lease,
     }
 
 
