@@ -29,12 +29,13 @@ MEDIA_EXTENSION_MAP = {
 
 def create_lease(payload) -> dict:
     with get_cursor(dict_cursor=True) as (_, cursor):
+        cursor.execute("SET search_path TO public;")
         soil_type = _normalize_soil_type(payload.soil_type)
         pricing = _build_pricing(cursor, payload, soil_type)
 
         cursor.execute(
             """
-            INSERT INTO land_leases (
+            INSERT INTO public.land_leases (
                 owner_name,
                 contact_number,
                 barangay,
@@ -169,7 +170,7 @@ def list_leases() -> list[dict]:
                 lease_title,
                 availability_start_date,
                 availability_end_date
-            FROM land_leases
+            FROM public.land_leases
             ORDER BY created_at DESC;
             """
         )
@@ -275,7 +276,7 @@ def get_lease_contract(lease_id: int) -> dict:
                 price_per_sqm,
                 total_lease_price,
                 generated_at
-            FROM lease_contracts
+            FROM public.lease_contracts
             WHERE land_lease_id = %s
             ORDER BY generated_at DESC, id DESC
             LIMIT 1;
@@ -388,7 +389,7 @@ def _create_lease_contract(cursor, lease: dict) -> dict:
 
     cursor.execute(
         """
-        INSERT INTO lease_contracts (
+        INSERT INTO public.lease_contracts (
             land_lease_id,
             contract_number,
             contract_body,
@@ -467,7 +468,7 @@ def _fetch_lease_or_404(cursor, lease_id: int) -> dict:
             lease_title,
             availability_start_date,
             availability_end_date
-        FROM land_leases
+        FROM public.land_leases
         WHERE id = %s
         LIMIT 1;
         """,
@@ -493,7 +494,7 @@ def _fetch_media(cursor, lease_id: int) -> list[dict]:
             content_type,
             size_bytes,
             uploaded_at
-        FROM lease_media
+        FROM public.lease_media
         WHERE land_lease_id = %s
         ORDER BY uploaded_at DESC, id DESC;
         """,
@@ -512,7 +513,7 @@ def _fetch_contract_summary(cursor, lease_id: int) -> dict | None:
             price_per_sqm,
             total_lease_price,
             generated_at
-        FROM lease_contracts
+        FROM public.lease_contracts
         WHERE land_lease_id = %s
         ORDER BY generated_at DESC, id DESC
         LIMIT 1;
