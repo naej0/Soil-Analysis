@@ -181,7 +181,17 @@ def _build_payload(payload_data: dict) -> LeaseCreateRequest:
     try:
         return LeaseCreateRequest(**payload_data)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        safe_errors = []
+
+        for error in exc.errors():
+            error.pop("input", None)
+            error.pop("url", None)
+            safe_errors.append(error)
+
+        raise HTTPException(
+            status_code=422,
+            detail=jsonable_encoder(safe_errors),
+        ) from exc
 
 
 def _clean_payload_data(payload_data: dict) -> dict:
