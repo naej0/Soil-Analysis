@@ -1,7 +1,9 @@
+from json import JSONDecodeError
 from datetime import date
 from typing import Optional
 from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, Request
 from fastapi.encoders import jsonable_encoder
+from pydantic import ValidationError
 from models.common_models import ErrorResponse
 from models.lease_models import (
     LeaseContractResponse,
@@ -104,3 +106,61 @@ def upload_lease_media_route(
 )
 def get_lease_contract_route(lease_id: int):
     return get_lease_contract(lease_id)
+
+async def _parse_create_request(request: Request) -> tuple[dict, list]:
+    content_type = request.headers.get("content-type", "").lower()
+    media_files = []
+
+    if content_type.startswith("multipart/form-data") or content_type.startswith("application/x-www-form-urlencoded"):
+        form = await request.form()
+        payload_data = {}
+
+        for key, value in form.multi_items():
+            if _is_upload_file(value):
+                media_files.append(value)
+            else:
+                payload_data[key] = value
+
+        return _clean_payload_data(payload_data), media_files
+
+    if content_type.startswith("application/json"):
+        try:
+            body = await request.json()
+        except JSONDecodeError as exc:
+            raise HTTPException(status_code=422, detail="Invalid JSON body.") from exc
+
+        if body is None:
+            body = {}
+
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=422, detail="JSON body must be an object.")
+
+        return _clean_payload_data(body), media_files
+
+    return _clean_payload_data(dict(request.query_params)), media_files
+
+
+def _build_payload(payload_data: dict) -> LeaseCreateRequest:
+    try:
+        return LeaseCreateRequest(**payload_data)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def _clean_payload_data(payload_data: dict) -> dict:
+    cleaned = {}
+
+    for key, value in payload_data.items():
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped == "":
+                continue
+            cleaned[key] = stripped
+        else:
+            cleaned[key] = value
+
+    return cleaned
+
+
+def _is_upload_file(value) -> bool:
+    return hasattr(value, "filename") and hasattr(value, "file")
