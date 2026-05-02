@@ -77,10 +77,10 @@ def create_lease_route(
                 payload_data[key] = value
 
         payload = _build_payload(payload_data)
-        lease = create_lease(payload, media_files=[])
+        lease = create_lease(payload)
 
         return jsonable_encoder({
-            "message": "Land lease created successfully",
+          "message": "Land lease created successfully",
             "lease": lease,
         })
 
