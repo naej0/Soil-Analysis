@@ -1,12 +1,12 @@
 from datetime import date
 from typing import Optional
-from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, requests
-
+from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, Request
+from fastapi.encoders import jsonable_encoder
 from models.common_models import ErrorResponse
 from models.lease_models import (
     LeaseContractResponse,
     LeaseCreateRequest,
-    LeaseCreateResponse,
+    LeaseCreateResponse,    
     LeaseDetailResponse,
     LeaseListResponse,
     LeaseMediaUploadResponse,
@@ -25,64 +25,33 @@ router = APIRouter(tags=["Land Leases"])
 
 @router.post(
     "/leases",
-    response_model=LeaseCreateResponse,
     summary="Create a land lease listing",
-    description="Creates a land lease record using the existing land_leases table, computed pricing, and an auto-generated contract.",
+    description="Creates a land lease record using the existing land_leases table, optional lease media, computed pricing, and an auto-generated contract.",
     responses={
-        400: {"model": ErrorResponse, "description": "Missing price rate or invalid lease data."},
-        422: {"model": ErrorResponse, "description": "Missing or invalid request fields."},
+        400: {"model": ErrorResponse, "description": "Invalid soil type, price rate, duration unit, or upload."},
+        422: {"model": ErrorResponse, "description": "Missing or invalid lease fields."},
+        500: {"model": ErrorResponse, "description": "Lease creation failed unexpectedly."},
     },
 )
-async def create_lease_route(
-    owner_name: str = Query(...),
-    contact_number: str = Query(...),
-    barangay: str = Query(...),
-    soil_type: str = Query(...),
-    area_hectares: Optional[float] = Query(None),
-    area_sqm: Optional[float] = Query(None),
-    price: Optional[float] = Query(None),
-    description: Optional[str] = Query(None),
-    rental_start_date: date = Query(...),
-    duration_value: float = Query(1),
-    duration_unit: str = Query(
-        "months",
-        description="Allowed values: day, days, month, months, year, years",
-    ),
-    location_description: Optional[str] = Query(None),
-    lease_title: Optional[str] = Query(None),
-    user_id: Optional[int] = Query(None),
-):
-    payload_data = {
-        "owner_name": owner_name,
-        "contact_number": contact_number,
-        "barangay": barangay,
-        "soil_type": soil_type,
-        "rental_start_date": rental_start_date,
-        "duration_value": duration_value,
-        "duration_unit": duration_unit,
-    }
+async def create_lease_route(request: Request):
+    try:
+        payload_data, media_files = await _parse_create_request(request)
+        payload = _build_payload(payload_data)
+        lease = create_lease(payload, media_files=media_files)
 
-    optional_fields = {
-        "area_hectares": area_hectares,
-        "area_sqm": area_sqm,
-        "price": price,
-        "description": description,
-        "location_description": location_description,
-        "lease_title": lease_title,
-        "user_id": user_id,
-    }
+        return jsonable_encoder({
+            "message": "Land lease created successfully",
+            "lease": lease,
+        })
 
-    for key, value in optional_fields.items():
-        if value is not None:
-            payload_data[key] = value
+    except HTTPException:
+        raise
 
-    payload = _build_payload(payload_data)
-    lease = create_lease(payload, media_files=[])
-
-    return {
-        "message": "Land lease created successfully",
-        "lease": lease,
-    }
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Lease creation failed: {str(exc)}"
+        ) from exc
 
 
 @router.get(
