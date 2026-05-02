@@ -29,7 +29,8 @@ MEDIA_EXTENSION_MAP = {
 
 def create_lease(payload) -> dict:
     with get_cursor(dict_cursor=True) as (_, cursor):
-        cursor.execute("SET search_path TO public;")
+        _ensure_lease_schema(cursor)
+
         soil_type = _normalize_soil_type(payload.soil_type)
         pricing = _build_pricing(cursor, payload, soil_type)
 
@@ -144,6 +145,8 @@ def create_lease(payload) -> dict:
 
 def list_leases() -> list[dict]:
     with get_cursor(dict_cursor=True) as (_, cursor):
+        _ensure_lease_schema(cursor)
+
         cursor.execute(
             """
             SELECT
@@ -290,6 +293,157 @@ def get_lease_contract(lease_id: int) -> dict:
 
     return _serialize_contract_body(dict(contract))
 
+def _ensure_lease_schema(cursor) -> None:
+    """
+    Ensures the Lease Marketplace tables/columns exist in the exact database
+    connection used by the running backend.
+    """
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS land_leases (
+            id SERIAL PRIMARY KEY,
+            owner_name VARCHAR(150),
+            contact_number VARCHAR(50),
+            barangay VARCHAR(100),
+            soil_type VARCHAR(100),
+            area_hectares NUMERIC,
+            price NUMERIC,
+            description TEXT,
+            status VARCHAR(50) DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_id INTEGER,
+            is_flagged BOOLEAN DEFAULT FALSE,
+            flag_reason TEXT,
+            moderated_by INTEGER,
+            moderated_at TIMESTAMP
+        );
+
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS area_sqm NUMERIC;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS rental_start_date DATE;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS rental_end_date DATE;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS duration_value INTEGER;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS duration_unit VARCHAR(30);
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS duration_months NUMERIC;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS price_per_sqm NUMERIC;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS total_lease_price NUMERIC;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS location_description TEXT;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS contract_status VARCHAR(50);
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS lease_title VARCHAR(200);
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS availability_start_date DATE;
+        ALTER TABLE land_leases ADD COLUMN IF NOT EXISTS availability_end_date DATE;
+
+        CREATE TABLE IF NOT EXISTS lease_soil_price_rates (
+            id SERIAL PRIMARY KEY,
+            soil_type VARCHAR(80),
+            price_per_sqm_per_month NUMERIC(12,2),
+            price_per_sqm NUMERIC(12,2),
+            is_active BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        ALTER TABLE lease_soil_price_rates ADD COLUMN IF NOT EXISTS id SERIAL;
+        ALTER TABLE lease_soil_price_rates ADD COLUMN IF NOT EXISTS soil_type VARCHAR(80);
+        ALTER TABLE lease_soil_price_rates ADD COLUMN IF NOT EXISTS price_per_sqm_per_month NUMERIC(12,2);
+        ALTER TABLE lease_soil_price_rates ADD COLUMN IF NOT EXISTS price_per_sqm NUMERIC(12,2);
+        ALTER TABLE lease_soil_price_rates ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE;
+        ALTER TABLE lease_soil_price_rates ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        ALTER TABLE lease_soil_price_rates ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+
+        CREATE TABLE IF NOT EXISTS lease_contracts (
+            id SERIAL PRIMARY KEY,
+            land_lease_id INTEGER,
+            contract_number VARCHAR(80),
+            contract_body TEXT,
+            price_per_sqm NUMERIC,
+            total_lease_price NUMERIC,
+            generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        ALTER TABLE lease_contracts ADD COLUMN IF NOT EXISTS land_lease_id INTEGER;
+        ALTER TABLE lease_contracts ADD COLUMN IF NOT EXISTS contract_number VARCHAR(80);
+        ALTER TABLE lease_contracts ADD COLUMN IF NOT EXISTS contract_body TEXT;
+        ALTER TABLE lease_contracts ADD COLUMN IF NOT EXISTS price_per_sqm NUMERIC;
+        ALTER TABLE lease_contracts ADD COLUMN IF NOT EXISTS total_lease_price NUMERIC;
+        ALTER TABLE lease_contracts ADD COLUMN IF NOT EXISTS generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+
+        CREATE TABLE IF NOT EXISTS lease_media (
+            id SERIAL PRIMARY KEY,
+            land_lease_id INTEGER,
+            file_type VARCHAR(50),
+            original_file_name VARCHAR(255),
+            saved_file_name VARCHAR(255),
+            file_path TEXT,
+            file_extension VARCHAR(20),
+            content_type VARCHAR(120),
+            size_bytes INTEGER,
+            uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS land_lease_id INTEGER;
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS file_type VARCHAR(50);
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS original_file_name VARCHAR(255);
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS saved_file_name VARCHAR(255);
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS file_path TEXT;
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS file_extension VARCHAR(20);
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS content_type VARCHAR(120);
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS size_bytes INTEGER;
+        ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        """
+    )
+
+    cursor.execute(
+        """
+        WITH default_rates(soil_type, rate) AS (
+            VALUES
+                ('Clay', 2.00),
+                ('Clay Loam', 2.50),
+                ('Loam', 3.00),
+                ('Rock Land', 1.00),
+                ('Silty Clay', 2.20)
+        )
+        UPDATE lease_soil_price_rates r
+        SET
+            price_per_sqm_per_month = d.rate,
+            price_per_sqm = d.rate,
+            is_active = TRUE,
+            updated_at = CURRENT_TIMESTAMP
+        FROM default_rates d
+        WHERE LOWER(TRIM(r.soil_type)) = LOWER(TRIM(d.soil_type));
+        """
+    )
+
+    cursor.execute(
+        """
+        WITH default_rates(soil_type, rate) AS (
+            VALUES
+                ('Clay', 2.00),
+                ('Clay Loam', 2.50),
+                ('Loam', 3.00),
+                ('Rock Land', 1.00),
+                ('Silty Clay', 2.20)
+        )
+        INSERT INTO lease_soil_price_rates (
+            soil_type,
+            price_per_sqm_per_month,
+            price_per_sqm,
+            is_active
+        )
+        SELECT
+            d.soil_type,
+            d.rate,
+            d.rate,
+            TRUE
+        FROM default_rates d
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM lease_soil_price_rates r
+            WHERE LOWER(TRIM(r.soil_type)) = LOWER(TRIM(d.soil_type))
+        );
+        """
+    )
 
 def _build_pricing(cursor, payload, soil_type: str) -> dict:
     area_hectares = _optional_positive_decimal(payload.area_hectares, "area_hectares")
