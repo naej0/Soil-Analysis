@@ -335,12 +335,14 @@ def _build_pricing(cursor, payload, soil_type: str) -> dict:
 
 
 def _fetch_price_per_sqm(cursor, soil_type: str) -> Decimal | None:
+    price_column = _price_rate_column(cursor)
+
     cursor.execute(
-        """
-        SELECT *
-        FROM lease_soil_price_rates
+        f"""
+        SELECT {price_column} AS price_per_sqm
+        FROM public.lease_soil_price_rates
         WHERE LOWER(TRIM(soil_type)) = LOWER(TRIM(%s))
-          AND COALESCE(is_active, TRUE) = TRUE
+          AND is_active = TRUE
         ORDER BY id DESC
         LIMIT 1;
         """,
@@ -348,24 +350,7 @@ def _fetch_price_per_sqm(cursor, soil_type: str) -> Decimal | None:
     )
 
     row = cursor.fetchone()
-
-    if not row:
-        return None
-
-    row = dict(row)
-
-    rate = row.get("price_per_sqm_per_month")
-
-    if rate is None:
-        rate = row.get("price_per_sqm")
-
-    if rate is None:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Price rate found for '{soil_type}', but no usable price column exists. Available columns: {list(row.keys())}",
-        )
-
-    return Decimal(str(rate))
+    return row["price_per_sqm"] if row else None
 
 
 def _price_rate_column(cursor) -> str:
@@ -378,14 +363,18 @@ def _price_rate_column(cursor) -> str:
           AND column_name IN ('price_per_sqm_per_month', 'price_per_sqm');
         """
     )
+
     columns = {row["column_name"] for row in cursor.fetchall()}
+
     if "price_per_sqm_per_month" in columns:
         return "price_per_sqm_per_month"
+
     if "price_per_sqm" in columns:
         return "price_per_sqm"
+
     raise HTTPException(
         status_code=500,
-        detail="lease_soil_price_rates must have price_per_sqm_per_month or price_per_sqm.",
+        detail="public.lease_soil_price_rates must have price_per_sqm_per_month or price_per_sqm.",
     )
 
 
