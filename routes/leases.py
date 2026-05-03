@@ -1,6 +1,6 @@
 from json import JSONDecodeError
 from datetime import date
-from typing import Optional
+from typing import List, Optional
 from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
@@ -126,7 +126,7 @@ def get_lease_route(lease_id: int):
 )
 def upload_lease_media_route(
     lease_id: int,
-    files: list[UploadFile] = File(...),
+    files: List[UploadFile] = File(...),
 ):
     return {
         "message": "Lease media uploaded successfully",
