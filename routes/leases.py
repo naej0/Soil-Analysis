@@ -1,7 +1,6 @@
 from json import JSONDecodeError
 from datetime import date
 from typing import List, Optional
-from typing import Annotated
 from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
@@ -122,7 +121,10 @@ def get_lease_route(lease_id: int):
 )
 async def upload_lease_media_route(
     lease_id: int,
-    files: Annotated[list[UploadFile], File(description="Upload lease photo, video, or shapefile files")],
+    files: List[UploadFile] = File(
+        ...,
+        description="Upload lease photo, video, or shapefile files",
+    ),
 ):
     uploaded_media = upload_lease_media(lease_id, files)
 
