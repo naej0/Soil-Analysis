@@ -10,7 +10,6 @@ import uuid
 import shutil
 import importlib
 from fastapi import HTTPException, UploadFile
-from tensorflow.keras.models import load_model # type: ignore
 from datetime import datetime, timezone
 from functools import lru_cache
 from io import BytesIO
@@ -373,7 +372,7 @@ def predict_soil_from_file(file_name: str) -> dict:
 
 
 def run_model_inference(image_path: Path) -> dict:
-    bundle = load_model_bundle()
+    bundle = get_soil_model_bundle()
     model = bundle["model"]
     labels = bundle["labels"]
 
@@ -469,7 +468,8 @@ def validate_model_and_labels(model, labels: dict) -> None:
         )
 
 
-def load_model_bundle() -> dict:
+def get_soil_model_bundle() -> dict:
+    """Load and cache the trained soil model only when prediction needs it."""
     model_path = TRAINED_MODEL_PATH
     labels_path = LABELS_PATH
 
@@ -530,6 +530,10 @@ def load_model_bundle() -> dict:
         "model": _MODEL_CACHE["model"],
         "labels": _MODEL_CACHE["labels"],
     }
+
+
+def load_model_bundle() -> dict:
+    return get_soil_model_bundle()
 
 
 def build_soil_decision_support(predicted_soil_type: str | None) -> dict:
