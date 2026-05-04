@@ -1,6 +1,7 @@
 from json import JSONDecodeError
 from datetime import date
 from typing import List, Optional
+from typing import Annotated
 from fastapi import APIRouter, Body, File, HTTPException, Query, UploadFile, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
@@ -116,21 +117,18 @@ def get_lease_route(lease_id: int):
 
 @router.post(
     "/leases/{lease_id}/media",
-    response_model=LeaseMediaUploadResponse,
     summary="Upload lease media",
-    description="Uploads photos, videos, or shapefile ZIP archives for an existing lease.",
-    responses={
-        400: {"model": ErrorResponse, "description": "Invalid media upload."},
-        404: {"model": ErrorResponse, "description": "Lease not found."},
-    },
+    description="Uploads photo, video, or shapefile files for an existing land lease.",
 )
-def upload_lease_media_route(
+async def upload_lease_media_route(
     lease_id: int,
-    files: List[UploadFile] = File(...),
+    files: Annotated[list[UploadFile], File(description="Upload lease photo, video, or shapefile files")],
 ):
+    uploaded_media = upload_lease_media(lease_id, files)
+
     return {
         "message": "Lease media uploaded successfully",
-        "uploaded_media": upload_lease_media(lease_id, files),
+        "media": uploaded_media,
     }
 
 
