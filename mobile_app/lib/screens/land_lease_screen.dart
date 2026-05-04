@@ -1,4 +1,8 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../config/api_config.dart';
 import '../models/lease_model.dart';
@@ -19,16 +23,46 @@ class LandLeaseScreen extends StatefulWidget {
 }
 
 class _LandLeaseScreenState extends State<LandLeaseScreen> {
+  static const List<String> _durationUnits = ['days', 'months', 'years'];
+
+  static const List<String> _leaseMediaExtensions = [
+    'jpg',
+    'jpeg',
+    'png',
+    'webp',
+    'heic',
+    'heif',
+    'mp4',
+    'mov',
+    'avi',
+    'mkv',
+    'zip',
+    'shp',
+    'shx',
+    'dbf',
+    'prj',
+  ];
+
   final _formKey = GlobalKey<FormState>();
+  final _titleController = TextEditingController();
   final _ownerController = TextEditingController();
   final _contactController = TextEditingController();
   final _barangayController = TextEditingController();
-  final _areaController = TextEditingController();
+  final _areaSqmController = TextEditingController();
   final _priceController = TextEditingController();
+  final _rentalStartDateController = TextEditingController();
+  final _durationController = TextEditingController(text: '6');
+  final _locationController = TextEditingController();
   final _descriptionController = TextEditingController();
+
   String _selectedSoilType = ApiConfig.supportedSoilTypes.first;
+  String _selectedDurationUnit = _durationUnits[1];
+  DateTime? _rentalStartDate;
+  List<File> _selectedMediaFiles = const [];
+
   bool _loadingList = false;
   bool _submitting = false;
+  String? _submissionStatus;
   List<LeaseModel> _leases = const [];
   String? _leasesMessage;
   bool _leasesMessageIsError = false;
@@ -41,11 +75,15 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
 
   @override
   void dispose() {
+    _titleController.dispose();
     _ownerController.dispose();
     _contactController.dispose();
     _barangayController.dispose();
-    _areaController.dispose();
+    _areaSqmController.dispose();
     _priceController.dispose();
+    _rentalStartDateController.dispose();
+    _durationController.dispose();
+    _locationController.dispose();
     _descriptionController.dispose();
     super.dispose();
   }
@@ -91,38 +129,78 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
       return;
     }
 
+    final rentalStartDate = _rentalStartDate;
+    if (rentalStartDate == null) {
+      _showMessage('Select the rental start date.');
+      return;
+    }
+
     setState(() {
       _submitting = true;
+      _submissionStatus = 'Saving lease listing...';
     });
 
     try {
-      await widget.apiService.createLease(
+      final lease = await widget.apiService.createLease(
+        leaseTitle: _titleController.text.trim(),
         ownerName: _ownerController.text.trim(),
         contactNumber: _contactController.text.trim(),
         barangay: _barangayController.text.trim(),
         soilType: _selectedSoilType,
-        areaHectares: _areaController.text.trim(),
-        price: _priceController.text.trim(),
+        areaSqm: _areaSqmController.text.trim(),
+        price: _emptyToNull(_priceController.text),
         description: _descriptionController.text.trim(),
+        rentalStartDate: _formatDateForQuery(rentalStartDate),
+        durationValue: _durationController.text.trim(),
+        durationUnit: _selectedDurationUnit,
+        locationDescription: _locationController.text.trim(),
       );
 
-      _ownerController.clear();
-      _contactController.clear();
-      _barangayController.clear();
-      _areaController.clear();
-      _priceController.clear();
-      _descriptionController.clear();
+      final mediaFiles = List<File>.from(_selectedMediaFiles);
+      final failedUploads = <String>[];
 
+      for (var index = 0; index < mediaFiles.length; index++) {
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _submissionStatus =
+              'Uploading media ${index + 1} of ${mediaFiles.length}...';
+        });
+
+        final file = mediaFiles[index];
+        try {
+          await widget.apiService.uploadLeaseMedia(
+            leaseId: lease.id,
+            file: file,
+          );
+        } on ApiException {
+          failedUploads.add(_fileName(file));
+        }
+      }
+
+      _clearCreateForm();
       await _loadLeases();
 
       if (!mounted) {
         return;
       }
-      _showMessage(
-        _leasesMessageIsError
-            ? 'Lease listing saved, but the listings could not be refreshed right now.'
-            : 'Lease listing created successfully.',
-      );
+
+      if (failedUploads.isNotEmpty) {
+        final fileLabel = failedUploads.length == 1
+            ? failedUploads.first
+            : '${failedUploads.length} media files';
+        _showMessage(
+          'Lease listing created, but $fileLabel could not be uploaded.',
+        );
+      } else {
+        _showMessage(
+          mediaFiles.isEmpty
+              ? 'Lease listing created successfully.'
+              : 'Lease listing and media uploaded successfully.',
+        );
+      }
     } on ApiException catch (error) {
       if (!mounted) {
         return;
@@ -132,9 +210,98 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
       if (mounted) {
         setState(() {
           _submitting = false;
+          _submissionStatus = null;
         });
       }
     }
+  }
+
+  void _clearCreateForm() {
+    _titleController.clear();
+    _ownerController.clear();
+    _contactController.clear();
+    _barangayController.clear();
+    _areaSqmController.clear();
+    _priceController.clear();
+    _rentalStartDateController.clear();
+    _durationController.text = '6';
+    _locationController.clear();
+    _descriptionController.clear();
+
+    setState(() {
+      _selectedSoilType = ApiConfig.supportedSoilTypes.first;
+      _selectedDurationUnit = _durationUnits[1];
+      _rentalStartDate = null;
+      _selectedMediaFiles = const [];
+    });
+  }
+
+  String? _emptyToNull(String value) {
+    final trimmed = value.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
+  Future<void> _pickRentalStartDate() async {
+    final now = DateTime.now();
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _rentalStartDate ?? now,
+      firstDate: DateTime(now.year - 1),
+      lastDate: DateTime(now.year + 20, 12, 31),
+    );
+
+    if (pickedDate == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _rentalStartDate = pickedDate;
+      _rentalStartDateController.text = _formatDateOnly(pickedDate);
+    });
+  }
+
+  Future<void> _pickLeaseMedia() async {
+    try {
+      final result = await FilePicker.pickFiles(
+        allowMultiple: true,
+        type: FileType.custom,
+        allowedExtensions: _leaseMediaExtensions,
+      );
+
+      if (result == null) {
+        return;
+      }
+
+      final pickedFiles = result.files
+          .where((file) => file.path != null && file.path!.trim().isNotEmpty)
+          .map((file) => File(file.path!))
+          .toList();
+
+      if (pickedFiles.isEmpty) {
+        _showMessage('No uploadable media file was selected.');
+        return;
+      }
+
+      setState(() {
+        final filesByPath = {
+          for (final file in _selectedMediaFiles) file.path: file,
+          for (final file in pickedFiles) file.path: file,
+        };
+        _selectedMediaFiles = filesByPath.values.toList();
+      });
+    } on PlatformException {
+      _showMessage('Could not open the file picker right now.');
+    } catch (_) {
+      _showMessage('Could not select lease media right now.');
+    }
+  }
+
+  void _removeSelectedMedia(File file) {
+    setState(() {
+      _selectedMediaFiles = _selectedMediaFiles
+          .where((selectedFile) => selectedFile.path != file.path)
+          .toList();
+    });
   }
 
   void _showMessage(String message) {
@@ -150,6 +317,36 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     );
   }
 
+  String? _validateRequiredText(String? value, String message) {
+    return value == null || value.trim().isEmpty ? message : null;
+  }
+
+  String? _validateRequiredPositiveNumber(String? value, String message) {
+    if (value == null || value.trim().isEmpty) {
+      return message;
+    }
+
+    final parsedValue = double.tryParse(value.trim());
+    if (parsedValue == null || parsedValue <= 0) {
+      return 'Enter a valid number greater than zero.';
+    }
+
+    return null;
+  }
+
+  String? _validateOptionalPositiveNumber(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return null;
+    }
+
+    final parsedValue = double.tryParse(value.trim());
+    if (parsedValue == null || parsedValue <= 0) {
+      return 'Enter a valid number greater than zero.';
+    }
+
+    return null;
+  }
+
   String _formatNumber(double value) {
     final roundedWhole = value.roundToDouble();
     if ((value - roundedWhole).abs() < 0.05) {
@@ -158,14 +355,62 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     return value.toStringAsFixed(1);
   }
 
-  String _formatArea(double value) => '${_formatNumber(value)} ha';
+  String _formatAreaForLease(LeaseModel lease) {
+    final areaSqm = lease.areaSqm;
+    if (areaSqm != null && areaSqm > 0) {
+      return '${_formatNumber(areaSqm)} sqm';
+    }
+
+    if (lease.areaHectares > 0) {
+      return '${_formatNumber(lease.areaHectares)} ha';
+    }
+
+    return 'Area TBD';
+  }
+
+  String _formatPrimaryPriceForLease(LeaseModel lease) {
+    final totalLeasePrice = lease.totalLeasePrice;
+    if (totalLeasePrice != null && totalLeasePrice > 0) {
+      return _formatPrice(totalLeasePrice);
+    }
+
+    if (lease.price > 0) {
+      return _formatPrice(lease.price);
+    }
+
+    return 'Price TBD';
+  }
+
+  String? _formatPricePerSqmForLease(LeaseModel lease) {
+    final pricePerSqm = lease.pricePerSqm;
+    if (pricePerSqm == null || pricePerSqm <= 0) {
+      return null;
+    }
+
+    return '${_formatPrice(pricePerSqm)} / sqm';
+  }
+
+  String _formatDuration(LeaseModel lease) {
+    final value = lease.durationValue;
+    final unit = lease.durationUnit?.trim();
+
+    if (value != null && value > 0 && unit != null && unit.isNotEmpty) {
+      return '${_formatNumber(value)} $unit';
+    }
+
+    final months = lease.durationMonths;
+    if (months != null && months > 0) {
+      return '${_formatNumber(months)} months';
+    }
+
+    return 'Not specified';
+  }
 
   String _formatPrice(double value) {
     final roundedWhole = value.roundToDouble();
     final hasFraction = (value - roundedWhole).abs() >= 0.005;
-    final fixedValue = hasFraction
-        ? value.toStringAsFixed(2)
-        : value.round().toString();
+    final fixedValue =
+        hasFraction ? value.toStringAsFixed(2) : value.round().toString();
     final parts = fixedValue.split('.');
     final digits = parts.first;
     final buffer = StringBuffer();
@@ -180,7 +425,20 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     if (parts.length > 1) {
       return 'PHP ${buffer.toString()}.${parts[1]}';
     }
+
     return 'PHP ${buffer.toString()}';
+  }
+
+  String _formatDateForQuery(DateTime value) {
+    final year = value.year.toString().padLeft(4, '0');
+    final month = value.month.toString().padLeft(2, '0');
+    final day = value.day.toString().padLeft(2, '0');
+    return '$year-$month-$day';
+  }
+
+  String _formatDateOnly(DateTime value) {
+    final local = value.toLocal();
+    return '${_monthLabel(local.month)} ${local.day}, ${local.year}';
   }
 
   String _formatDate(DateTime? value) {
@@ -190,9 +448,8 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
 
     final local = value.toLocal();
     final month = _monthLabel(local.month);
-    final hour = local.hour == 0
-        ? 12
-        : (local.hour > 12 ? local.hour - 12 : local.hour);
+    final hour =
+        local.hour == 0 ? 12 : (local.hour > 12 ? local.hour - 12 : local.hour);
     final minute = local.minute.toString().padLeft(2, '0');
     final period = local.hour >= 12 ? 'PM' : 'AM';
     return '$month ${local.day}, ${local.year} \u2022 $hour:$minute $period';
@@ -213,7 +470,39 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
       'Nov',
       'Dec',
     ];
+
     return months[month - 1];
+  }
+
+  String _fileName(File file) {
+    final parts = file.path.split(RegExp(r'[\\/]'));
+    return parts.isEmpty ? file.path : parts.last;
+  }
+
+  IconData _mediaIconForFile(File file) {
+    final name = _fileName(file).toLowerCase();
+
+    if (name.endsWith('.mp4') ||
+        name.endsWith('.mov') ||
+        name.endsWith('.avi') ||
+        name.endsWith('.mkv')) {
+      return Icons.videocam_outlined;
+    }
+
+    if (name.endsWith('.zip') ||
+        name.endsWith('.shp') ||
+        name.endsWith('.shx') ||
+        name.endsWith('.dbf') ||
+        name.endsWith('.prj')) {
+      return Icons.folder_zip_outlined;
+    }
+
+    return Icons.image_outlined;
+  }
+
+  String _displayText(String? value, String fallback) {
+    final normalized = value?.trim() ?? '';
+    return normalized.isEmpty ? fallback : normalized;
   }
 
   Color _leasesMessageColor(BuildContext context) {
@@ -309,6 +598,122 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     );
   }
 
+  Widget _buildDateField(BuildContext context) {
+    return TextFormField(
+      controller: _rentalStartDateController,
+      readOnly: true,
+      onTap: _submitting ? null : _pickRentalStartDate,
+      validator: (value) => _validateRequiredText(
+        value,
+        'Select the rental start date.',
+      ),
+      decoration: _buildDropdownDecoration(
+        context,
+        label: 'Rental Start Date',
+        icon: Icons.calendar_today_outlined,
+      ).copyWith(
+        suffixIcon: Icon(
+          Icons.event_outlined,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMediaPicker(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withOpacity(0.25),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: colorScheme.outline.withOpacity(0.18),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.perm_media_outlined,
+                color: colorScheme.onSurfaceVariant,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Lease Media',
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+              OutlinedButton.icon(
+                onPressed: _submitting ? null : _pickLeaseMedia,
+                icon: const Icon(Icons.attach_file_outlined, size: 18),
+                label: const Text('Add'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Optional: upload photos, videos, shapefile parts, or a zipped shapefile.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+          ),
+          const SizedBox(height: 10),
+          if (_selectedMediaFiles.isEmpty)
+            Text(
+              'No media selected.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+            )
+          else
+            Column(
+              children: _selectedMediaFiles
+                  .map(
+                    (file) => Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _mediaIconForFile(file),
+                            size: 18,
+                            color: colorScheme.primary,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _fileName(file),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                          IconButton(
+                            visualDensity: VisualDensity.compact,
+                            tooltip: 'Remove media',
+                            onPressed: _submitting
+                                ? null
+                                : () => _removeSelectedMedia(file),
+                            icon: const Icon(Icons.close, size: 18),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildFormGroup(
     BuildContext context, {
     required String title,
@@ -383,7 +788,9 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
               ],
               Flexible(
                 child: Text(
-                  _submitting ? 'Saving Lease Listing...' : 'Create Lease Listing',
+                  _submitting
+                      ? (_submissionStatus ?? 'Saving lease listing...')
+                      : 'Create Lease Listing',
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -432,6 +839,12 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
 
   Widget _buildLeaseCard(BuildContext context, LeaseModel lease) {
     final colorScheme = Theme.of(context).colorScheme;
+    final displayTitle = _displayText(
+      lease.leaseTitle,
+      lease.ownerName.trim().isEmpty ? 'Unnamed Lease' : lease.ownerName,
+    );
+    final ownerName = _displayText(lease.ownerName, 'Unnamed Owner');
+    final pricePerSqm = _formatPricePerSqmForLease(lease);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 14),
@@ -448,13 +861,22 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        lease.ownerName.trim().isEmpty
-                            ? 'Unnamed Owner'
-                            : lease.ownerName,
+                        displayTitle,
                         style: Theme.of(context).textTheme.titleLarge?.copyWith(
                               fontWeight: FontWeight.w800,
                             ),
                       ),
+                      if ((lease.leaseTitle ?? '').trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          ownerName,
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: colorScheme.onSurfaceVariant,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                        ),
+                      ],
                       const SizedBox(height: 8),
                       Wrap(
                         spacing: 8,
@@ -473,8 +895,14 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                           _buildSummaryChip(
                             context,
                             icon: Icons.straighten_outlined,
-                            label: 'Area: ${_formatArea(lease.areaHectares)}',
+                            label: 'Area: ${_formatAreaForLease(lease)}',
                           ),
+                          if (pricePerSqm != null)
+                            _buildSummaryChip(
+                              context,
+                              icon: Icons.price_change_outlined,
+                              label: pricePerSqm,
+                            ),
                         ],
                       ),
                     ],
@@ -494,7 +922,7 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                     ),
                   ),
                   child: Text(
-                    _formatPrice(lease.price),
+                    _formatPrimaryPriceForLease(lease),
                     style: Theme.of(context).textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.w800,
                           color: colorScheme.primary,
@@ -527,6 +955,24 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                       width: itemWidth,
                       child: _buildMetricTile(
                         context,
+                        label: 'Rental Start',
+                        value: lease.rentalStartDate == null
+                            ? 'Not specified'
+                            : _formatDateOnly(lease.rentalStartDate!),
+                      ),
+                    ),
+                    SizedBox(
+                      width: itemWidth,
+                      child: _buildMetricTile(
+                        context,
+                        label: 'Duration',
+                        value: _formatDuration(lease),
+                      ),
+                    ),
+                    SizedBox(
+                      width: itemWidth,
+                      child: _buildMetricTile(
+                        context,
                         label: 'Listed On',
                         value: _formatDate(lease.createdAt),
                       ),
@@ -535,6 +981,14 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                 );
               },
             ),
+            if ((lease.locationDescription ?? '').trim().isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _buildMetricTile(
+                context,
+                label: 'Location Description',
+                value: lease.locationDescription!.trim(),
+              ),
+            ],
             const SizedBox(height: 16),
             Container(
               width: double.infinity,
@@ -592,7 +1046,8 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                     Text(
                       'Post farmland for lease and review available farm lots in one place.',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                     ),
                     const SizedBox(height: 12),
@@ -641,13 +1096,72 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Add the owner details, farm location, soil type, and lease price so farmers can review the listing clearly.',
+                        'Add lease details, rental duration, land area, and optional media for farmers to review.',
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color:
-                                  Theme.of(context).colorScheme.onSurfaceVariant,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
                             ),
                       ),
                       const SizedBox(height: 16),
+                      _buildFormGroup(
+                        context,
+                        title: 'Listing Details',
+                        description:
+                            'Name the lease and set when the rental period begins.',
+                        children: [
+                          CustomTextField(
+                            controller: _titleController,
+                            label: 'Lease Title',
+                            prefixIcon: Icons.title_outlined,
+                            validator: (value) => _validateRequiredText(
+                              value,
+                              'Enter the lease title.',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          _buildDateField(context),
+                          const SizedBox(height: 12),
+                          CustomTextField(
+                            controller: _durationController,
+                            label: 'Duration Value',
+                            prefixIcon: Icons.timelapse_outlined,
+                            keyboardType: TextInputType.number,
+                            validator: (value) =>
+                                _validateRequiredPositiveNumber(
+                              value,
+                              'Enter the lease duration.',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          DropdownButtonFormField<String>(
+                            initialValue: _selectedDurationUnit,
+                            decoration: _buildDropdownDecoration(
+                              context,
+                              label: 'Duration Unit',
+                              icon: Icons.calendar_view_month_outlined,
+                            ),
+                            items: _durationUnits
+                                .map(
+                                  (unit) => DropdownMenuItem(
+                                    value: unit,
+                                    child: Text(unit),
+                                  ),
+                                )
+                                .toList(),
+                            onChanged: _submitting
+                                ? null
+                                : (value) {
+                                    if (value != null) {
+                                      setState(() {
+                                        _selectedDurationUnit = value;
+                                      });
+                                    }
+                                  },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
                       _buildFormGroup(
                         context,
                         title: 'Owner / Contact Details',
@@ -658,9 +1172,10 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                             controller: _ownerController,
                             label: 'Owner Name',
                             prefixIcon: Icons.person_outline,
-                            validator: (value) => value == null || value.trim().isEmpty
-                                ? 'Enter the owner name.'
-                                : null,
+                            validator: (value) => _validateRequiredText(
+                              value,
+                              'Enter the owner name.',
+                            ),
                           ),
                           const SizedBox(height: 12),
                           CustomTextField(
@@ -668,9 +1183,10 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                             label: 'Contact Number',
                             prefixIcon: Icons.phone_outlined,
                             keyboardType: TextInputType.phone,
-                            validator: (value) => value == null || value.trim().isEmpty
-                                ? 'Enter the contact number.'
-                                : null,
+                            validator: (value) => _validateRequiredText(
+                              value,
+                              'Enter the contact number.',
+                            ),
                           ),
                         ],
                       ),
@@ -679,15 +1195,16 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                         context,
                         title: 'Land Details',
                         description:
-                            'Highlight the barangay, soil type, and land area so farmers can scan the listing faster.',
+                            'Highlight the barangay, soil type, land area, and field location.',
                         children: [
                           CustomTextField(
                             controller: _barangayController,
                             label: 'Barangay',
                             prefixIcon: Icons.place_outlined,
-                            validator: (value) => value == null || value.trim().isEmpty
-                                ? 'Enter the barangay.'
-                                : null,
+                            validator: (value) => _validateRequiredText(
+                              value,
+                              'Enter the barangay.',
+                            ),
                           ),
                           const SizedBox(height: 12),
                           DropdownButtonFormField<String>(
@@ -705,30 +1222,40 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                                   ),
                                 )
                                 .toList(),
-                            onChanged: (value) {
-                              if (value != null) {
-                                setState(() {
-                                  _selectedSoilType = value;
-                                });
-                              }
-                            },
+                            onChanged: _submitting
+                                ? null
+                                : (value) {
+                                    if (value != null) {
+                                      setState(() {
+                                        _selectedSoilType = value;
+                                      });
+                                    }
+                                  },
                           ),
                           const SizedBox(height: 12),
                           CustomTextField(
-                            controller: _areaController,
-                            label: 'Area (ha)',
+                            controller: _areaSqmController,
+                            label: 'Area (sqm)',
                             prefixIcon: Icons.straighten_outlined,
-                            keyboardType:
-                                const TextInputType.numberWithOptions(decimal: true),
-                            validator: (value) {
-                              if (value == null || value.trim().isEmpty) {
-                                return 'Enter the land area.';
-                              }
-                              if (double.tryParse(value.trim()) == null) {
-                                return 'Enter a valid area number.';
-                              }
-                              return null;
-                            },
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            validator: (value) =>
+                                _validateRequiredPositiveNumber(
+                              value,
+                              'Enter the land area in square meters.',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          CustomTextField(
+                            controller: _locationController,
+                            label: 'Location Description',
+                            prefixIcon: Icons.map_outlined,
+                            maxLines: 2,
+                            validator: (value) => _validateRequiredText(
+                              value,
+                              'Enter the location description.',
+                            ),
                           ),
                         ],
                       ),
@@ -737,34 +1264,38 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                         context,
                         title: 'Pricing / Description',
                         description:
-                            'Add the lease price and a short summary of the lot so farmers know what to expect.',
+                            'Price is optional because the backend can compute price using soil type and square meters.',
                         children: [
                           CustomTextField(
                             controller: _priceController,
-                            label: 'Lease Price',
+                            label: 'Lease Price (Optional)',
                             prefixIcon: Icons.payments_outlined,
-                            keyboardType:
-                                const TextInputType.numberWithOptions(decimal: true),
-                            validator: (value) {
-                              if (value == null || value.trim().isEmpty) {
-                                return 'Enter the lease price.';
-                              }
-                              if (double.tryParse(value.trim()) == null) {
-                                return 'Enter a valid price number.';
-                              }
-                              return null;
-                            },
+                            keyboardType: const TextInputType.numberWithOptions(
+                              decimal: true,
+                            ),
+                            validator: _validateOptionalPositiveNumber,
                           ),
                           const SizedBox(height: 12),
                           CustomTextField(
                             controller: _descriptionController,
-                            label: 'Short Description',
+                            label: 'Lease Description',
                             prefixIcon: Icons.notes_outlined,
                             maxLines: 3,
-                            validator: (value) => value == null || value.trim().isEmpty
-                                ? 'Add a short land description.'
-                                : null,
+                            validator: (value) => _validateRequiredText(
+                              value,
+                              'Add a lease description.',
+                            ),
                           ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      _buildFormGroup(
+                        context,
+                        title: 'Media Uploads',
+                        description:
+                            'Optional: attach photos, videos, shapefile parts, or zipped shapefiles.',
+                        children: [
+                          _buildMediaPicker(context),
                         ],
                       ),
                       const SizedBox(height: 16),
@@ -780,7 +1311,7 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Review farmland listings below. Barangay, soil type, area, and price are highlighted for faster farm decisions.',
+                      'Review farmland listings below. Barangay, soil type, area, rental duration, and computed price are highlighted for faster farm decisions.',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color:
                                 Theme.of(context).colorScheme.onSurfaceVariant,
@@ -804,7 +1335,10 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                             const SizedBox(height: 12),
                             Text(
                               'Loading available land lease listings...',
-                              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
                                     color: Theme.of(context)
                                         .colorScheme
                                         .onSurfaceVariant,
@@ -832,17 +1366,19 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                         ),
                         child: Text(
                           'No land lease listings have been posted yet. Create the first listing above to start the marketplace.',
-                          style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                                color: Theme.of(context)
-                                    .colorScheme
-                                    .onSurfaceVariant,
-                              ),
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
+                                  ),
                         ),
                       )
                     else ...[
                       _buildSectionLabel(context, 'Saved Listings'),
                       const SizedBox(height: 12),
-                      ..._leases.map((lease) => _buildLeaseCard(context, lease)),
+                      ..._leases
+                          .map((lease) => _buildLeaseCard(context, lease)),
                     ],
                   ],
                 ),

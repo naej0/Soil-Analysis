@@ -20,7 +20,6 @@ class ApiException implements Exception {
   String toString() => message;
 }
 
-
 class ApiService {
   ApiService({http.Client? client}) : _client = client ?? http.Client();
 
@@ -60,7 +59,6 @@ class ApiService {
       queryParameters: query.isEmpty ? null : query,
     );
   }
-
 
   Map<String, dynamic> _adminQueryParameters(int adminUserId) {
     return {
@@ -181,8 +179,9 @@ class ApiService {
         'total_records': data['total_productivity_records'] ?? 0,
       },
       'soil_analysis_logs': {
-        'total_logs':
-            data['total_soil_analyses'] ?? data['total_soil_analysis_logs'] ?? 0,
+        'total_logs': data['total_soil_analyses'] ??
+            data['total_soil_analysis_logs'] ??
+            0,
         'common_soil_types': data['common_soil_types'] ?? const [],
       },
     };
@@ -247,10 +246,7 @@ class ApiService {
     );
 
     return _mapList(
-      data['logs'] ??
-          data['soil_analysis_logs'] ??
-          data['data'] ??
-          const [],
+      data['logs'] ?? data['soil_analysis_logs'] ?? data['data'] ?? const [],
     );
   }
 
@@ -358,29 +354,79 @@ class ApiService {
   }
 
   Future<LeaseModel> createLease({
+    String? leaseTitle,
     required String ownerName,
     required String contactNumber,
     required String barangay,
     required String soilType,
-    required String areaHectares,
-    required String price,
+    String? areaHectares,
+    String? areaSqm,
+    String? price,
     required String description,
+    String? rentalStartDate,
+    String? durationValue,
+    String? durationUnit,
+    String? locationDescription,
+    int? userId,
   }) async {
     final data = await _post(
       '/leases',
       queryParameters: {
+        'lease_title': leaseTitle,
         'owner_name': ownerName,
         'contact_number': contactNumber,
         'barangay': barangay,
         'soil_type': soilType,
         'area_hectares': areaHectares,
+        'area_sqm': areaSqm,
         'price': price,
         'description': description,
+        'rental_start_date': rentalStartDate,
+        'duration_value': durationValue,
+        'duration_unit': durationUnit,
+        'location_description': locationDescription,
+        'user_id': userId,
       },
     );
+
+    final lease = data['lease'];
+    if (lease is! Map) {
+      throw const ApiException(
+        'Lease listing was created, but the response was incomplete.',
+      );
+    }
+
     return LeaseModel.fromJson(
-      Map<String, dynamic>.from(data['lease'] as Map),
+      Map<String, dynamic>.from(lease),
     );
+  }
+
+  Future<Map<String, dynamic>> uploadLeaseMedia({
+    required int leaseId,
+    required File file,
+  }) async {
+    try {
+      final request = http.MultipartRequest(
+        'POST',
+        _buildUri('/leases/$leaseId/media'),
+      );
+
+      request.headers['Accept'] = 'application/json';
+
+      request.files.add(
+        await http.MultipartFile.fromPath('file', file.path),
+      );
+
+      final streamedResponse = await request.send();
+      final response = await http.Response.fromStream(streamedResponse);
+      return _decodeResponse(response);
+    } on SocketException {
+      throw ApiException('Could not connect to backend at $_baseUrl');
+    } on http.ClientException {
+      throw const ApiException(
+        'Network request failed while uploading the lease media.',
+      );
+    }
   }
 
   Future<List<ProductivityRecord>> getProductivityRecords(int userId) async {
@@ -458,10 +504,8 @@ class ApiService {
         'original_file_name': originalFileName,
       if (lat != null) 'lat': lat,
       if (lng != null) 'lng': lng,
-      if (barangay != null && barangay.trim().isNotEmpty)
-        'barangay': barangay,
-      if (soilName != null && soilName.trim().isNotEmpty)
-        'soil_name': soilName,
+      if (barangay != null && barangay.trim().isNotEmpty) 'barangay': barangay,
+      if (soilName != null && soilName.trim().isNotEmpty) 'soil_name': soilName,
     };
 
     final data = await _postJson(
@@ -555,12 +599,9 @@ class ApiService {
     }
   }
 
-
   List<Map<String, dynamic>> _mapList(dynamic value) {
     final items = value as List? ?? [];
-    return items
-        .map((item) => Map<String, dynamic>.from(item as Map))
-        .toList();
+    return items.map((item) => Map<String, dynamic>.from(item as Map)).toList();
   }
 
   Map<String, dynamic> _decodeResponse(http.Response response) {
