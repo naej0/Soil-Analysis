@@ -1,13 +1,21 @@
 from __future__ import annotations
 
 import calendar
+from io import BytesIO
 import re
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
+from xml.sax.saxutils import escape
 
 from fastapi import HTTPException, UploadFile
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import inch
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from config import SUPPORTED_SOIL_TYPES, UPLOAD_DIR
 from db import get_cursor
@@ -302,6 +310,33 @@ def get_lease_contract(lease_id: int) -> dict:
         raise HTTPException(status_code=404, detail="No generated contract found for this lease.")
 
     return _serialize_contract_body(dict(contract))
+
+
+def get_lease_contract_pdf(lease_id: int) -> bytes:
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        lease = _fetch_lease_or_404(cursor, lease_id)
+        cursor.execute(
+            """
+            SELECT
+                contract_number,
+                contract_body,
+                price_per_sqm,
+                total_lease_price,
+                generated_at
+            FROM public.lease_contracts
+            WHERE land_lease_id = %s
+            ORDER BY generated_at DESC, id DESC
+            LIMIT 1;
+            """,
+            (lease_id,),
+        )
+        contract = cursor.fetchone()
+
+    if not contract:
+        raise HTTPException(status_code=404, detail="No generated contract found for this lease.")
+
+    return _build_lease_contract_pdf(lease, _serialize_contract_body(dict(contract)))
+
 
 def _ensure_lease_schema(cursor) -> None:
     """
@@ -603,6 +638,245 @@ def _generate_contract_body(lease: dict, contract_number: str) -> str:
             "The parties should verify land boundaries, payment schedule, responsibilities, and legal terms before signing.",
         ]
     )
+
+
+def _build_lease_contract_pdf(lease: dict, contract: dict) -> bytes:
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=0.75 * inch,
+        leftMargin=0.75 * inch,
+        topMargin=0.75 * inch,
+        bottomMargin=0.7 * inch,
+        title="KASUNDUAN SA PAGPAPAUPA NG LUPA",
+    )
+
+    styles = _lease_pdf_styles()
+    elements = [
+        Paragraph("KASUNDUAN SA PAGPAPAUPA NG LUPA", styles["LeaseTitle"]),
+        Spacer(1, 0.16 * inch),
+        Paragraph(
+            "Ang kasunduang ito ay nagpapatunay sa mga pangunahing detalye ng pagpapaupa "
+            "ng lupang pang-agrikultura. The renter details are left blank until a renter "
+            "is confirmed and both parties are ready to sign.",
+            styles["Body"],
+        ),
+        Spacer(1, 0.18 * inch),
+        Paragraph("Mga Detalye ng Kontrata", styles["SectionHeading"]),
+        Spacer(1, 0.08 * inch),
+        _lease_details_table(lease, contract, styles),
+        Spacer(1, 0.2 * inch),
+        Paragraph("Mga Tuntunin at Kundisyon", styles["SectionHeading"]),
+        Spacer(1, 0.08 * inch),
+    ]
+
+    terms = [
+        "The land shall be used only for lawful agricultural or agreed purposes.",
+        "The renter shall pay the agreed amount according to the payment schedule.",
+        "The renter shall maintain the land and avoid causing damage.",
+        "The landowner shall allow the renter to use the land during the agreed rental period.",
+        "Both parties should verify boundaries, responsibilities, and legal terms before signing.",
+    ]
+
+    for index, term in enumerate(terms, start=1):
+        elements.append(Paragraph(f"{index}. {_pdf_text(term)}", styles["BodyJustified"]))
+        elements.append(Spacer(1, 0.05 * inch))
+
+    elements.extend(
+        [
+            Spacer(1, 0.18 * inch),
+            Paragraph("Lagda ng mga Partido", styles["SectionHeading"]),
+            Spacer(1, 0.1 * inch),
+            _signature_table(lease, styles),
+        ]
+    )
+
+    doc.build(elements, onFirstPage=_draw_pdf_footer, onLaterPages=_draw_pdf_footer)
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
+
+
+def _lease_pdf_styles() -> dict:
+    base_styles = getSampleStyleSheet()
+    return {
+        "LeaseTitle": ParagraphStyle(
+            "LeaseTitle",
+            parent=base_styles["Title"],
+            alignment=TA_CENTER,
+            fontName="Helvetica-Bold",
+            fontSize=16,
+            leading=20,
+            spaceAfter=6,
+            textColor=colors.HexColor("#1f2933"),
+        ),
+        "SectionHeading": ParagraphStyle(
+            "SectionHeading",
+            parent=base_styles["Heading2"],
+            fontName="Helvetica-Bold",
+            fontSize=11,
+            leading=14,
+            spaceBefore=4,
+            spaceAfter=4,
+            textColor=colors.HexColor("#1f2933"),
+        ),
+        "Body": ParagraphStyle(
+            "Body",
+            parent=base_styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=9.5,
+            leading=13,
+            textColor=colors.HexColor("#202124"),
+        ),
+        "BodyJustified": ParagraphStyle(
+            "BodyJustified",
+            parent=base_styles["BodyText"],
+            alignment=TA_JUSTIFY,
+            fontName="Helvetica",
+            fontSize=9.5,
+            leading=13,
+            textColor=colors.HexColor("#202124"),
+        ),
+        "FieldLabel": ParagraphStyle(
+            "FieldLabel",
+            parent=base_styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=8.8,
+            leading=11,
+            textColor=colors.HexColor("#1f2933"),
+        ),
+        "FieldValue": ParagraphStyle(
+            "FieldValue",
+            parent=base_styles["BodyText"],
+            fontName="Helvetica",
+            fontSize=8.8,
+            leading=11,
+            textColor=colors.HexColor("#202124"),
+        ),
+        "SignatureHeader": ParagraphStyle(
+            "SignatureHeader",
+            parent=base_styles["BodyText"],
+            fontName="Helvetica-Bold",
+            fontSize=9,
+            leading=12,
+            textColor=colors.HexColor("#1f2933"),
+        ),
+    }
+
+
+def _lease_details_table(lease: dict, contract: dict, styles: dict) -> Table:
+    details = [
+        ("Contract Number", contract.get("contract_number")),
+        ("Lease Title", lease.get("lease_title") or "Untitled Lease"),
+        ("Landowner / Nagpapa-upa", lease.get("owner_name")),
+        ("Contact Number", lease.get("contact_number")),
+        ("Barangay", lease.get("barangay")),
+        ("Location Description", lease.get("location_description") or "Not specified"),
+        ("Soil Type", lease.get("soil_type")),
+        ("Area in sqm", f"{_format_decimal(lease.get('area_sqm'))} sqm"),
+        ("Rental Start Date", _format_pdf_date(lease.get("rental_start_date"))),
+        ("Rental End Date", _format_pdf_date(lease.get("rental_end_date"))),
+        ("Duration", _format_lease_duration(lease)),
+        ("Price per sqm", f"PHP {_format_money(contract.get('price_per_sqm'))} per month"),
+        ("Total Lease Price", f"PHP {_format_money(contract.get('total_lease_price'))}"),
+    ]
+    rows = [
+        [
+            Paragraph(_pdf_text(label), styles["FieldLabel"]),
+            Paragraph(_pdf_text(value), styles["FieldValue"]),
+        ]
+        for label, value in details
+    ]
+    table = Table(rows, colWidths=[1.95 * inch, 4.05 * inch], hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#b8c2cc")),
+                ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#f3f6f8")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 7),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+        )
+    )
+    return table
+
+
+def _signature_table(lease: dict, styles: dict) -> Table:
+    owner_name = lease.get("owner_name") or "______________________"
+    rows = [
+        [
+            Paragraph("<b>NAGPAPA-UPA / LANDOWNER</b>", styles["SignatureHeader"]),
+            Paragraph("<b>UMUUPA / RENTER</b>", styles["SignatureHeader"]),
+        ],
+        [
+            Paragraph(f"Name: {_pdf_text(owner_name)}", styles["FieldValue"]),
+            Paragraph("Name: ______________________", styles["FieldValue"]),
+        ],
+        [
+            Paragraph("Signature: ______________________", styles["FieldValue"]),
+            Paragraph("Signature: ______________________", styles["FieldValue"]),
+        ],
+        [
+            Paragraph("Date: ______________________", styles["FieldValue"]),
+            Paragraph("Date: ______________________", styles["FieldValue"]),
+        ],
+        [
+            Paragraph("Witness 1: ______________________", styles["FieldValue"]),
+            Paragraph("Witness 2: ______________________", styles["FieldValue"]),
+        ],
+    ]
+    table = Table(rows, colWidths=[3 * inch, 3 * inch], hAlign="LEFT")
+    table.setStyle(
+        TableStyle(
+            [
+                ("BOX", (0, 0), (-1, -1), 0.45, colors.HexColor("#8f9aa3")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#c7d0d8")),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f6f8")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    return table
+
+
+def _draw_pdf_footer(canvas, doc) -> None:
+    canvas.saveState()
+    canvas.setFont("Helvetica", 8)
+    canvas.setFillColor(colors.HexColor("#667085"))
+    canvas.drawString(0.75 * inch, 0.42 * inch, "Generated Lease Marketplace Contract")
+    canvas.drawRightString(A4[0] - (0.75 * inch), 0.42 * inch, f"Page {doc.page}")
+    canvas.restoreState()
+
+
+def _format_pdf_date(value) -> str:
+    if isinstance(value, (date, datetime)):
+        return value.strftime("%B %d, %Y")
+    return str(value or "Not specified")
+
+
+def _format_lease_duration(lease: dict) -> str:
+    duration_value = _format_decimal(lease.get("duration_value"))
+    duration_unit = lease.get("duration_unit") or "months"
+    duration_months = _format_decimal(lease.get("duration_months"))
+    return f"{duration_value} {duration_unit} ({duration_months} months)"
+
+
+def _format_money(value) -> str:
+    if value is None:
+        return "0.00"
+    return f"{Decimal(str(value)):,.2f}"
+
+
+def _pdf_text(value) -> str:
+    return escape(str(value if value is not None else "Not specified"))
 
 
 def _fetch_lease_or_404(cursor, lease_id: int) -> dict:

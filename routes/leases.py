@@ -1,7 +1,7 @@
 from json import JSONDecodeError
 from datetime import date
 from typing import Optional
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile, Request
+from fastapi import APIRouter, File, HTTPException, Query, Response, UploadFile, Request
 from fastapi.encoders import jsonable_encoder
 from pydantic import ValidationError
 from models.common_models import ErrorResponse
@@ -17,6 +17,7 @@ from services.lease_service import (
     create_lease,
     get_lease,
     get_lease_contract,
+    get_lease_contract_pdf,
     list_leases,
     upload_lease_media,
 )
@@ -143,6 +144,29 @@ async def upload_lease_media_route(
 )
 def get_lease_contract_route(lease_id: int):
     return get_lease_contract(lease_id)
+
+
+@router.get(
+    "/leases/{lease_id}/contract/pdf",
+    summary="Download a land lease contract PDF",
+    description="Returns the generated lease contract as a formal PDF document.",
+    responses={
+        200: {
+            "content": {"application/pdf": {}},
+            "description": "Generated lease contract PDF.",
+        },
+        404: {"model": ErrorResponse, "description": "Lease or contract not found."},
+    },
+)
+def get_lease_contract_pdf_route(lease_id: int):
+    pdf_bytes = get_lease_contract_pdf(lease_id)
+    filename = f"lease_contract_{lease_id}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
 
 async def _parse_create_request(request: Request) -> tuple[dict, list]:
     content_type = request.headers.get("content-type", "").lower()
