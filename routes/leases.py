@@ -12,12 +12,15 @@ from models.lease_models import (
     LeaseDetailResponse,
     LeaseListResponse,
     LeaseMediaUploadResponse,
+    LeaseRentalRequestCreate,
 )
 from services.lease_service import (
     create_lease,
+    create_lease_rental_request,
     get_lease,
     get_lease_contract,
     get_lease_contract_pdf,
+    get_lease_rental_requests,
     list_leases,
     upload_lease_media,
 )
@@ -113,6 +116,33 @@ def list_leases_route():
 )
 def get_lease_route(lease_id: int):
     return {"lease": get_lease(lease_id)}
+
+
+@router.post(
+    "/leases/{lease_id}/rent",
+    summary="Request to rent a land lease",
+    description="Creates a pending rental request for an existing land lease.",
+    responses={
+        400: {"model": ErrorResponse, "description": "Renter account is inactive or restricted."},
+        404: {"model": ErrorResponse, "description": "Lease or renter user not found."},
+    },
+)
+def create_lease_rental_request_route(lease_id: int, payload: LeaseRentalRequestCreate):
+    rental_request = create_lease_rental_request(lease_id, payload)
+    return {
+        "message": "Lease rental request submitted successfully",
+        "rental_request": rental_request,
+    }
+
+
+@router.get(
+    "/leases/{lease_id}/rentals",
+    summary="List lease rental requests",
+    description="Returns all rental requests for an existing land lease.",
+    responses={404: {"model": ErrorResponse, "description": "Lease not found."}},
+)
+def get_lease_rental_requests_route(lease_id: int):
+    return {"rental_requests": get_lease_rental_requests(lease_id)}
 
 
 @router.post(

@@ -43,6 +43,27 @@ MEDIA_EXTENSION_MAP = {
     **{extension: ("shapefile", "shapefiles") for extension in SHAPEFILE_EXTENSIONS},
 }
 
+VALID_LEASE_PAYMENT_STATUSES = {"unpaid", "partial", "paid", "overdue"}
+VALID_LEASE_RENTAL_STATUSES = {"pending", "approved", "rejected", "active", "completed", "cancelled"}
+
+LEASE_RENTAL_REQUEST_COLUMNS = [
+    "id",
+    "land_lease_id",
+    "renter_user_id",
+    "renter_name",
+    "renter_contact",
+    "rental_status",
+    "payment_status",
+    "total_amount",
+    "amount_paid",
+    "balance_amount",
+    "payment_due_date",
+    "requested_at",
+    "approved_at",
+    "approved_by",
+    "updated_at",
+]
+
 
 
 def create_lease(payload) -> dict:
@@ -338,6 +359,187 @@ def get_lease_contract_pdf(lease_id: int) -> bytes:
     return _build_lease_contract_pdf(lease, _serialize_contract_body(dict(contract)))
 
 
+def create_lease_rental_request(lease_id: int, payload) -> dict:
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _ensure_lease_schema(cursor)
+        lease = _fetch_lease_or_404(cursor, lease_id)
+        renter_user = _fetch_renter_user_or_404(cursor, payload.renter_user_id)
+
+        total_amount = _decimal_or_zero(lease.get("total_lease_price"))
+        amount_paid = Decimal("0")
+        balance_amount = total_amount
+        renter_name = _optional_text(payload.renter_name) or renter_user.get("full_name")
+        renter_contact = _optional_text(payload.renter_contact)
+
+        cursor.execute(
+            f"""
+            INSERT INTO public.lease_rental_requests (
+                land_lease_id,
+                renter_user_id,
+                renter_name,
+                renter_contact,
+                rental_status,
+                payment_status,
+                total_amount,
+                amount_paid,
+                balance_amount,
+                payment_due_date
+            )
+            VALUES (%s, %s, %s, %s, 'pending', 'unpaid', %s, %s, %s, %s)
+            RETURNING {', '.join(LEASE_RENTAL_REQUEST_COLUMNS)};
+            """,
+            (
+                lease_id,
+                payload.renter_user_id,
+                renter_name,
+                renter_contact,
+                total_amount,
+                amount_paid,
+                balance_amount,
+                payload.payment_due_date,
+            ),
+        )
+        rental_request = cursor.fetchone()
+
+    return _serialize_rental_request(dict(rental_request))
+
+
+def get_lease_rental_requests(lease_id: int) -> list[dict]:
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _ensure_lease_schema(cursor)
+        _fetch_lease_or_404(cursor, lease_id)
+        cursor.execute(
+            f"""
+            SELECT {', '.join(LEASE_RENTAL_REQUEST_COLUMNS)}
+            FROM public.lease_rental_requests
+            WHERE land_lease_id = %s
+            ORDER BY requested_at DESC NULLS LAST, id DESC;
+            """,
+            (lease_id,),
+        )
+        rows = cursor.fetchall()
+
+    return [_serialize_rental_request(dict(row)) for row in rows]
+
+
+def get_admin_lease_payments() -> list[dict]:
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _ensure_lease_schema(cursor)
+        cursor.execute(
+            """
+            SELECT
+                rr.id,
+                rr.land_lease_id,
+                ll.lease_title,
+                ll.owner_name AS landowner_name,
+                rr.renter_user_id,
+                COALESCE(rr.renter_name, u.full_name) AS renter_name,
+                rr.renter_contact,
+                rr.total_amount,
+                rr.amount_paid,
+                rr.balance_amount,
+                rr.payment_status,
+                rr.rental_status,
+                rr.payment_due_date,
+                rr.requested_at,
+                rr.approved_at,
+                rr.approved_by
+            FROM public.lease_rental_requests rr
+            JOIN public.land_leases ll ON ll.id = rr.land_lease_id
+            LEFT JOIN public.users u ON u.id = rr.renter_user_id
+            ORDER BY rr.requested_at DESC NULLS LAST, rr.id DESC;
+            """
+        )
+        rows = cursor.fetchall()
+
+    return [_serialize_admin_lease_payment(dict(row)) for row in rows]
+
+
+def update_lease_rental_payment(rental_id: int, payload) -> dict:
+    requested_status = _normalize_payment_status(getattr(payload, "payment_status", None))
+
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _ensure_lease_schema(cursor)
+        rental_request = _fetch_rental_request_or_404(cursor, rental_id)
+
+        total_amount = _decimal_or_zero(rental_request.get("total_amount"))
+        amount_paid = _optional_non_negative_decimal(
+            getattr(payload, "amount_paid", None),
+            "amount_paid",
+        )
+        if amount_paid is None:
+            amount_paid = _decimal_or_zero(rental_request.get("amount_paid"))
+
+        balance_amount = total_amount - amount_paid
+        if balance_amount < 0:
+            balance_amount = Decimal("0")
+
+        if amount_paid >= total_amount:
+            payment_status = "paid"
+            balance_amount = Decimal("0")
+        elif requested_status:
+            payment_status = requested_status
+        elif amount_paid > 0:
+            payment_status = "partial"
+        else:
+            payment_status = "unpaid"
+
+        cursor.execute(
+            f"""
+            UPDATE public.lease_rental_requests
+            SET
+                amount_paid = %s,
+                balance_amount = %s,
+                payment_status = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING {', '.join(LEASE_RENTAL_REQUEST_COLUMNS)};
+            """,
+            (
+                _round_decimal(amount_paid, "0.01"),
+                _round_decimal(balance_amount, "0.01"),
+                payment_status,
+                rental_id,
+            ),
+        )
+        updated_request = cursor.fetchone()
+
+    return _serialize_rental_request(dict(updated_request))
+
+
+def update_lease_rental_status(rental_id: int, payload) -> dict:
+    rental_status = _normalize_rental_status(payload.rental_status)
+
+    with get_cursor(dict_cursor=True) as (_, cursor):
+        _ensure_lease_schema(cursor)
+        _fetch_rental_request_or_404(cursor, rental_id)
+
+        set_parts = [
+            "rental_status = %s",
+            "updated_at = CURRENT_TIMESTAMP",
+        ]
+        params = [rental_status]
+
+        if rental_status == "approved":
+            set_parts.append("approved_at = CURRENT_TIMESTAMP")
+            set_parts.append("approved_by = %s")
+            params.append(payload.approved_by)
+
+        params.append(rental_id)
+        cursor.execute(
+            f"""
+            UPDATE public.lease_rental_requests
+            SET {', '.join(set_parts)}
+            WHERE id = %s
+            RETURNING {', '.join(LEASE_RENTAL_REQUEST_COLUMNS)};
+            """,
+            tuple(params),
+        )
+        updated_request = cursor.fetchone()
+
+    return _serialize_rental_request(dict(updated_request))
+
+
 def _ensure_lease_schema(cursor) -> None:
     """
     Ensures the Lease Marketplace tables/columns exist in the exact database
@@ -436,6 +638,40 @@ def _ensure_lease_schema(cursor) -> None:
         ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS content_type VARCHAR(120);
         ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS size_bytes INTEGER;
         ALTER TABLE lease_media ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+
+        CREATE TABLE IF NOT EXISTS lease_rental_requests (
+            id SERIAL PRIMARY KEY,
+            land_lease_id INTEGER NOT NULL,
+            renter_user_id INTEGER NOT NULL,
+            renter_name VARCHAR(150),
+            renter_contact VARCHAR(50),
+            rental_status VARCHAR(50) DEFAULT 'pending',
+            payment_status VARCHAR(50) DEFAULT 'unpaid',
+            total_amount NUMERIC DEFAULT 0,
+            amount_paid NUMERIC DEFAULT 0,
+            balance_amount NUMERIC DEFAULT 0,
+            payment_due_date DATE,
+            requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            approved_at TIMESTAMP NULL,
+            approved_by INTEGER NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS id SERIAL;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS land_lease_id INTEGER;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS renter_user_id INTEGER;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS renter_name VARCHAR(150);
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS renter_contact VARCHAR(50);
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS rental_status VARCHAR(50) DEFAULT 'pending';
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'unpaid';
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS total_amount NUMERIC DEFAULT 0;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS amount_paid NUMERIC DEFAULT 0;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS balance_amount NUMERIC DEFAULT 0;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS payment_due_date DATE;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP NULL;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS approved_by INTEGER NULL;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
         """
     )
 
@@ -879,6 +1115,96 @@ def _pdf_text(value) -> str:
     return escape(str(value if value is not None else "Not specified"))
 
 
+def _fetch_renter_user_or_404(cursor, renter_user_id: int) -> dict:
+    user_columns = _get_table_columns(cursor, "users")
+    if not user_columns:
+        raise HTTPException(status_code=500, detail="users table not found.")
+
+    select_columns = [
+        column
+        for column in ["id", "full_name", "email", "is_active", "is_restricted"]
+        if column in user_columns
+    ]
+    if "id" not in select_columns:
+        raise HTTPException(status_code=500, detail="users table is missing id column.")
+
+    cursor.execute(
+        f"SELECT {', '.join(select_columns)} FROM public.users WHERE id = %s LIMIT 1;",
+        (renter_user_id,),
+    )
+    renter_user = cursor.fetchone()
+    if not renter_user:
+        raise HTTPException(status_code=404, detail="Renter user not found.")
+
+    renter_user = dict(renter_user)
+    if "is_active" in user_columns and renter_user.get("is_active") is False:
+        raise HTTPException(status_code=400, detail="Renter user account is inactive.")
+    if "is_restricted" in user_columns and renter_user.get("is_restricted") is True:
+        raise HTTPException(status_code=400, detail="Renter user account is restricted.")
+
+    return renter_user
+
+
+def _fetch_rental_request_or_404(cursor, rental_id: int) -> dict:
+    cursor.execute(
+        f"""
+        SELECT {', '.join(LEASE_RENTAL_REQUEST_COLUMNS)}
+        FROM public.lease_rental_requests
+        WHERE id = %s
+        LIMIT 1;
+        """,
+        (rental_id,),
+    )
+    rental_request = cursor.fetchone()
+    if not rental_request:
+        raise HTTPException(status_code=404, detail="Lease rental request not found.")
+    return dict(rental_request)
+
+
+def _get_table_columns(cursor, table_name: str) -> set[str]:
+    cursor.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = %s
+        ORDER BY ordinal_position;
+        """,
+        (table_name,),
+    )
+    return {row["column_name"] if isinstance(row, dict) else row[0] for row in cursor.fetchall()}
+
+
+def _normalize_payment_status(payment_status: str | None) -> str | None:
+    status = _optional_text(payment_status)
+    if status is None:
+        return None
+
+    normalized = status.lower()
+    if normalized not in VALID_LEASE_PAYMENT_STATUSES:
+        allowed = ", ".join(sorted(VALID_LEASE_PAYMENT_STATUSES))
+        raise HTTPException(status_code=400, detail=f"payment_status must be one of: {allowed}.")
+    return normalized
+
+
+def _normalize_rental_status(rental_status: str | None) -> str:
+    status = _optional_text(rental_status)
+    if status is None:
+        allowed = ", ".join(sorted(VALID_LEASE_RENTAL_STATUSES))
+        raise HTTPException(status_code=400, detail=f"rental_status must be one of: {allowed}.")
+
+    normalized = status.lower()
+    if normalized not in VALID_LEASE_RENTAL_STATUSES:
+        allowed = ", ".join(sorted(VALID_LEASE_RENTAL_STATUSES))
+        raise HTTPException(status_code=400, detail=f"rental_status must be one of: {allowed}.")
+    return normalized
+
+
+def _decimal_or_zero(value) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    return Decimal(str(value))
+
+
 def _fetch_lease_or_404(cursor, lease_id: int) -> dict:
     cursor.execute(
         """
@@ -1031,6 +1357,48 @@ def _serialize_contract_body(contract: dict) -> dict:
         "price_per_sqm": _to_float(contract.get("price_per_sqm")),
         "total_lease_price": _to_float(contract.get("total_lease_price")),
         "generated_at": contract.get("generated_at"),
+    }
+
+
+def _serialize_rental_request(rental_request: dict) -> dict:
+    return {
+        "id": rental_request["id"],
+        "land_lease_id": rental_request["land_lease_id"],
+        "renter_user_id": rental_request["renter_user_id"],
+        "renter_name": rental_request.get("renter_name"),
+        "renter_contact": rental_request.get("renter_contact"),
+        "rental_status": rental_request.get("rental_status"),
+        "payment_status": rental_request.get("payment_status"),
+        "total_amount": _to_float(rental_request.get("total_amount")),
+        "amount_paid": _to_float(rental_request.get("amount_paid")),
+        "balance_amount": _to_float(rental_request.get("balance_amount")),
+        "payment_due_date": rental_request.get("payment_due_date"),
+        "requested_at": rental_request.get("requested_at"),
+        "approved_at": rental_request.get("approved_at"),
+        "approved_by": rental_request.get("approved_by"),
+        "updated_at": rental_request.get("updated_at"),
+    }
+
+
+def _serialize_admin_lease_payment(row: dict) -> dict:
+    return {
+        "id": row["id"],
+        "rental_id": row["id"],
+        "land_lease_id": row["land_lease_id"],
+        "lease_title": row.get("lease_title"),
+        "landowner_name": row.get("landowner_name"),
+        "renter_user_id": row["renter_user_id"],
+        "renter_name": row.get("renter_name"),
+        "renter_contact": row.get("renter_contact"),
+        "total_amount": _to_float(row.get("total_amount")),
+        "amount_paid": _to_float(row.get("amount_paid")),
+        "balance_amount": _to_float(row.get("balance_amount")),
+        "payment_status": row.get("payment_status"),
+        "rental_status": row.get("rental_status"),
+        "payment_due_date": row.get("payment_due_date"),
+        "requested_at": row.get("requested_at"),
+        "approved_at": row.get("approved_at"),
+        "approved_by": row.get("approved_by"),
     }
 
 

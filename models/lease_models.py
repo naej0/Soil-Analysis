@@ -20,6 +20,23 @@ class LeaseCreateRequest(BaseModel):
     user_id: int | None = None
 
 
+class LeaseRentalRequestCreate(BaseModel):
+    renter_user_id: int = Field(..., gt=0)
+    renter_name: str | None = None
+    renter_contact: str | None = None
+    payment_due_date: date | None = None
+
+
+class LeaseRentalPaymentUpdate(BaseModel):
+    amount_paid: float | None = Field(None, ge=0)
+    payment_status: str | None = None
+
+
+class LeaseRentalStatusUpdate(BaseModel):
+    rental_status: str
+    approved_by: int | None = None
+
+
 class LeaseMediaItem(BaseModel):
     id: int
     land_lease_id: int

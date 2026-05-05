@@ -3,6 +3,12 @@ from typing import Any, Optional
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 
 from db import get_cursor
+from models.lease_models import LeaseRentalPaymentUpdate, LeaseRentalStatusUpdate
+from services.lease_service import (
+    get_admin_lease_payments,
+    update_lease_rental_payment,
+    update_lease_rental_status,
+)
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
@@ -458,6 +464,37 @@ def get_admin_leases(_: dict = Depends(require_admin)):
     with get_cursor(dict_cursor=True) as (_, cursor):
         leases = _fetch_table_rows(cursor, "land_leases", lease_columns)
     return {"leases": leases}
+
+
+@router.get("/lease-payments")
+def get_admin_lease_payments_route(_: dict = Depends(require_admin)):
+    return {"lease_payments": get_admin_lease_payments()}
+
+
+@router.patch("/lease-rentals/{rental_id}/payment")
+def update_lease_rental_payment_route(
+    rental_id: int,
+    payload: LeaseRentalPaymentUpdate,
+    _: dict = Depends(require_admin),
+):
+    rental_request = update_lease_rental_payment(rental_id, payload)
+    return {
+        "message": "Lease rental payment updated successfully",
+        "rental_request": rental_request,
+    }
+
+
+@router.patch("/lease-rentals/{rental_id}/status")
+def update_lease_rental_status_route(
+    rental_id: int,
+    payload: LeaseRentalStatusUpdate,
+    _: dict = Depends(require_admin),
+):
+    rental_request = update_lease_rental_status(rental_id, payload)
+    return {
+        "message": "Lease rental status updated successfully",
+        "rental_request": rental_request,
+    }
 
 
 @router.patch("/leases/{lease_id}/hide")
