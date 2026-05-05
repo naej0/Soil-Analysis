@@ -1,7 +1,6 @@
 from __future__ import annotations
 import os
 import io
-import cv2
 from matplotlib import image
 import numpy as np
 from PIL import Image, UnidentifiedImageError
@@ -18,11 +17,6 @@ from typing import Optional
 from uuid import uuid4
 from psycopg2.extras import Json, RealDictCursor
 from db import get_connection
-
-try:
-    import cv2  # type: ignore
-except Exception:
-    cv2 = None
 
 from config import (
     ALLOWED_IMAGE_EXTENSIONS,
@@ -55,6 +49,8 @@ _MODEL_CACHE = {
 
 _FACE_CASCADE = None
 _HOG = None
+_CV2 = None
+_CV2_IMPORT_ATTEMPTED = False
 
 SOIL_DECISION_SUPPORT = {
     "Loam": {
@@ -129,8 +125,22 @@ def _load_rgb_from_bytes(image_bytes: bytes) -> np.ndarray:
     return np.array(pil_image)
 
 
+def _get_cv2():
+    global _CV2, _CV2_IMPORT_ATTEMPTED
+
+    if not _CV2_IMPORT_ATTEMPTED:
+        _CV2_IMPORT_ATTEMPTED = True
+        try:
+            _CV2 = importlib.import_module("cv2")
+        except Exception:
+            _CV2 = None
+
+    return _CV2
+
+
 def _get_face_cascade():
     global _FACE_CASCADE
+    cv2 = _get_cv2()
 
     if cv2 is None:
         return None
@@ -150,6 +160,7 @@ def _get_face_cascade():
 
 def _get_people_hog():
     global _HOG
+    cv2 = _get_cv2()
 
     if cv2 is None:
         return None
@@ -166,6 +177,8 @@ def _get_people_hog():
 
 
 def _compute_texture_score(gray: np.ndarray) -> float:
+    cv2 = _get_cv2()
+
     if cv2 is not None:
         return float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
@@ -176,6 +189,7 @@ def _compute_texture_score(gray: np.ndarray) -> float:
 
 def validate_soil_photo(image_bytes: bytes):
     rgb = _load_rgb_from_bytes(image_bytes)
+    cv2 = _get_cv2()
 
     if rgb is None or rgb.size == 0:
         return False, "Invalid image."
