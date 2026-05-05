@@ -15,7 +15,17 @@ from db import get_cursor
 
 LEASE_UPLOAD_DIR = UPLOAD_DIR / "leases"
 
-PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+PHOTO_EXTENSIONS = {  ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".heic",
+    ".heif",
+    ".bmp",
+    ".gif",
+    ".tif",
+    ".tiff",}
+
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm"}
 SHAPEFILE_EXTENSIONS = {".zip"}
 
