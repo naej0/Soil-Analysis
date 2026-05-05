@@ -353,6 +353,37 @@ class ApiService {
         .toList();
   }
 
+  Future<Map<String, dynamic>> getLeaseDetails(int leaseId) async {
+    final data = await _get('/leases/$leaseId');
+    return Map<String, dynamic>.from(data);
+  }
+
+  Future<Map<String, dynamic>> getLeaseContract(int leaseId) async {
+    final data = await _get('/leases/$leaseId/contract');
+    return Map<String, dynamic>.from(data);
+  }
+
+  String buildUploadedFileUrl(String filePath) {
+    final trimmedPath = filePath.trim();
+    if (trimmedPath.isEmpty) {
+      return '';
+    }
+
+    final parsedUri = Uri.tryParse(trimmedPath);
+    if (parsedUri != null && parsedUri.hasScheme) {
+      return trimmedPath;
+    }
+
+    final normalizedPath = trimmedPath.replaceAll('\\', '/');
+    final pathWithoutLeadingSlash =
+        normalizedPath.replaceFirst(RegExp(r'^/+'), '');
+    final uploadPath = pathWithoutLeadingSlash.startsWith('uploads/')
+        ? pathWithoutLeadingSlash
+        : 'uploads/$pathWithoutLeadingSlash';
+
+    return '$_baseUrl/$uploadPath';
+  }
+
   Future<LeaseModel> createLease({
     String? leaseTitle,
     required String ownerName,

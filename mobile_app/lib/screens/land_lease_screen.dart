@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../config/api_config.dart';
 import '../models/lease_model.dart';
@@ -32,17 +34,24 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     'webp',
     'heic',
     'heif',
+    'bmp',
+    'gif',
+    'tif',
+    'tiff',
     'mp4',
     'mov',
     'avi',
     'mkv',
+    'webm',
     'zip',
     'shp',
     'shx',
     'dbf',
     'prj',
+    'cpg',
   ];
 
+  final ImagePicker _imagePicker = ImagePicker();
   final _formKey = GlobalKey<FormState>();
   final _titleController = TextEditingController();
   final _ownerController = TextEditingController();
@@ -62,6 +71,8 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
 
   bool _loadingList = false;
   bool _submitting = false;
+  int? _loadingMediaLeaseId;
+  int? _loadingContractLeaseId;
   String? _submissionStatus;
   List<LeaseModel> _leases = const [];
   String? _leasesMessage;
@@ -260,6 +271,33 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     });
   }
 
+  Future<void> _captureLeasePhoto() async {
+    try {
+      final pickedImage = await _imagePicker.pickImage(
+        source: ImageSource.camera,
+        imageQuality: 85,
+      );
+
+      if (pickedImage == null) {
+        return;
+      }
+
+      final capturedFile = File(pickedImage.path);
+
+      setState(() {
+        final filesByPath = {
+          for (final file in _selectedMediaFiles) file.path: file,
+          capturedFile.path: capturedFile,
+        };
+        _selectedMediaFiles = filesByPath.values.toList();
+      });
+    } on PlatformException {
+      _showMessage('Could not open the camera right now.');
+    } catch (_) {
+      _showMessage('Could not capture lease photo right now.');
+    }
+  }
+
   Future<void> _pickLeaseMedia() async {
     try {
       final result = await FilePicker.pickFiles(
@@ -302,6 +340,106 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
           .where((selectedFile) => selectedFile.path != file.path)
           .toList();
     });
+  }
+
+  Future<void> _viewLeaseMedia(LeaseModel lease) async {
+    setState(() {
+      _loadingMediaLeaseId = lease.id;
+    });
+
+    List<Map<String, dynamic>> mediaItems = const [];
+    try {
+      final details = await widget.apiService.getLeaseDetails(lease.id);
+      mediaItems = _extractLeaseMedia(details);
+    } on ApiException catch (error) {
+      if (mounted) {
+        _showMessage('Could not load lease media: ${error.message}');
+      }
+      return;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingMediaLeaseId = null;
+        });
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    await _showLeaseMediaSheet(lease, mediaItems);
+  }
+
+  Future<void> _viewLeaseContract(LeaseModel lease) async {
+    setState(() {
+      _loadingContractLeaseId = lease.id;
+    });
+
+    Map<String, dynamic>? contract;
+    try {
+      contract = await widget.apiService.getLeaseContract(lease.id);
+    } on ApiException catch (error) {
+      if (mounted) {
+        _showMessage('Could not load generated contract: ${error.message}');
+      }
+      return;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _loadingContractLeaseId = null;
+        });
+      }
+    }
+
+    if (!mounted || contract == null) {
+      return;
+    }
+
+    await _showLeaseContractSheet(lease, contract);
+  }
+
+  List<Map<String, dynamic>> _extractLeaseMedia(Map<String, dynamic> data) {
+    final leaseData = data['lease'];
+    if (leaseData is Map) {
+      final leaseMedia = _mapJsonList(leaseData['media']);
+      if (leaseMedia.isNotEmpty) {
+        return leaseMedia;
+      }
+    }
+
+    return _mapJsonList(data['media']);
+  }
+
+  List<Map<String, dynamic>> _mapJsonList(dynamic value) {
+    final items = value is List ? value : const [];
+
+    return items
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  Future<void> _openUploadedFile(String filePath) async {
+    final url = widget.apiService.buildUploadedFileUrl(filePath);
+    final uri = Uri.tryParse(url);
+
+    if (uri == null || !uri.hasScheme) {
+      _showMessage('This uploaded file does not have a valid URL.');
+      return;
+    }
+
+    try {
+      final opened = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) {
+        _showMessage('Could not open the uploaded file.');
+      }
+    } catch (_) {
+      _showMessage('Could not open the uploaded file.');
+    }
   }
 
   void _showMessage(String message) {
@@ -485,7 +623,8 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     if (name.endsWith('.mp4') ||
         name.endsWith('.mov') ||
         name.endsWith('.avi') ||
-        name.endsWith('.mkv')) {
+        name.endsWith('.mkv') ||
+        name.endsWith('.webm')) {
       return Icons.videocam_outlined;
     }
 
@@ -493,7 +632,8 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
         name.endsWith('.shp') ||
         name.endsWith('.shx') ||
         name.endsWith('.dbf') ||
-        name.endsWith('.prj')) {
+        name.endsWith('.prj') ||
+        name.endsWith('.cpg')) {
       return Icons.folder_zip_outlined;
     }
 
@@ -503,6 +643,127 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
   String _displayText(String? value, String fallback) {
     final normalized = value?.trim() ?? '';
     return normalized.isEmpty ? fallback : normalized;
+  }
+
+  String? _textFrom(dynamic value) {
+    final text = value?.toString().trim() ?? '';
+    return text.isEmpty ? null : text;
+  }
+
+  String? _firstNonEmptyText(Iterable<dynamic> values) {
+    for (final value in values) {
+      final text = _textFrom(value);
+      if (text != null) {
+        return text;
+      }
+    }
+    return null;
+  }
+
+  double? _doubleFrom(dynamic value) {
+    if (value is num) {
+      return value.toDouble();
+    }
+
+    final text = _textFrom(value);
+    return text == null ? null : double.tryParse(text);
+  }
+
+  String _formatContractPrice(dynamic value, {String suffix = ''}) {
+    final amount = _doubleFrom(value);
+    if (amount == null || amount <= 0) {
+      return 'Not available';
+    }
+    return '${_formatPrice(amount)}$suffix';
+  }
+
+  String _formatGeneratedAt(dynamic value) {
+    final text = _textFrom(value);
+    if (text == null) {
+      return 'Not available';
+    }
+
+    return _formatDate(DateTime.tryParse(text));
+  }
+
+  String _mediaDisplayName(Map<String, dynamic> media) {
+    return _firstNonEmptyText([
+          media['original_file_name'],
+          media['saved_file_name'],
+          media['file_path'],
+        ]) ??
+        'Uploaded media';
+  }
+
+  String? _mediaFilePath(Map<String, dynamic> media) {
+    return _textFrom(media['file_path']);
+  }
+
+  String _mediaExtension(Map<String, dynamic> media) {
+    final explicitExtension = _textFrom(media['file_extension']);
+    if (explicitExtension != null) {
+      return explicitExtension.startsWith('.')
+          ? explicitExtension.toLowerCase()
+          : '.$explicitExtension'.toLowerCase();
+    }
+
+    final name = _mediaDisplayName(media);
+    final dotIndex = name.lastIndexOf('.');
+    if (dotIndex == -1 || dotIndex == name.length - 1) {
+      return '';
+    }
+
+    return name.substring(dotIndex).toLowerCase();
+  }
+
+  String _mediaMetadata(Map<String, dynamic> media) {
+    final parts = [
+      _textFrom(media['file_type']),
+      _mediaExtension(media).isEmpty ? null : _mediaExtension(media),
+    ].whereType<String>().toList();
+
+    return parts.isEmpty ? 'Uploaded file' : parts.join(' | ');
+  }
+
+  bool _isImageMedia(Map<String, dynamic> media) {
+    final fileType = (_textFrom(media['file_type']) ?? '').toLowerCase();
+    final extension = _mediaExtension(media);
+
+    return fileType.contains('photo') ||
+        fileType.contains('image') ||
+        const {
+          '.bmp',
+          '.gif',
+          '.heic',
+          '.heif',
+          '.jpeg',
+          '.jpg',
+          '.png',
+          '.tif',
+          '.tiff',
+          '.webp',
+        }.contains(extension);
+  }
+
+  IconData _mediaIconForItem(Map<String, dynamic> media) {
+    final fileType = (_textFrom(media['file_type']) ?? '').toLowerCase();
+    final extension = _mediaExtension(media);
+
+    if (_isImageMedia(media)) {
+      return Icons.image_outlined;
+    }
+
+    if (fileType.contains('video') ||
+        const {'.avi', '.mkv', '.mov', '.mp4', '.webm'}.contains(extension)) {
+      return Icons.videocam_outlined;
+    }
+
+    if (const {'.cpg', '.dbf', '.prj', '.shp', '.shx', '.zip'}
+        .contains(extension)) {
+      return Icons.folder_zip_outlined;
+    }
+
+    return Icons.insert_drive_file_outlined;
   }
 
   Color _leasesMessageColor(BuildContext context) {
@@ -651,10 +912,22 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                       ),
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                onPressed: _submitting ? null : _captureLeasePhoto,
+                icon: const Icon(Icons.photo_camera_outlined, size: 18),
+                label: const Text('Take Photo'),
+              ),
               OutlinedButton.icon(
                 onPressed: _submitting ? null : _pickLeaseMedia,
                 icon: const Icon(Icons.attach_file_outlined, size: 18),
-                label: const Text('Add'),
+                label: const Text('Add File'),
               ),
             ],
           ),
@@ -833,6 +1106,366 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                 ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildLeaseActionButton({
+    required bool loading,
+    required IconData icon,
+    required String label,
+    required String loadingLabel,
+    required VoidCallback onPressed,
+  }) {
+    return OutlinedButton.icon(
+      onPressed: loading ? null : onPressed,
+      icon: loading
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Icon(icon, size: 18),
+      label: Text(loading ? loadingLabel : label),
+    );
+  }
+
+  Future<void> _showLeaseMediaSheet(
+    LeaseModel lease,
+    List<Map<String, dynamic>> mediaItems,
+  ) {
+    final title = _displayText(lease.leaseTitle, 'Lease Media');
+
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final colorScheme = Theme.of(sheetContext).colorScheme;
+
+        return FractionallySizedBox(
+          heightFactor: mediaItems.isEmpty ? 0.45 : 0.86,
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.photo_library_outlined,
+                        color: colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (mediaItems.isEmpty)
+                    Expanded(
+                      child: Center(
+                        child: Text(
+                          'No media uploaded for this lease.',
+                          textAlign: TextAlign.center,
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
+                                color: colorScheme.onSurfaceVariant,
+                              ),
+                        ),
+                      ),
+                    )
+                  else
+                    Expanded(
+                      child: ListView.separated(
+                        itemCount: mediaItems.length,
+                        separatorBuilder: (_, __) => const SizedBox(height: 12),
+                        itemBuilder: (context, index) {
+                          return _buildUploadedMediaItem(
+                            sheetContext,
+                            mediaItems[index],
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildUploadedMediaItem(
+    BuildContext context,
+    Map<String, dynamic> media,
+  ) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final displayName = _mediaDisplayName(media);
+    final filePath = _mediaFilePath(media);
+    final hasFilePath = filePath != null;
+    final isImage = _isImageMedia(media);
+    final url = hasFilePath
+        ? Uri.encodeFull(widget.apiService.buildUploadedFileUrl(filePath))
+        : '';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest.withOpacity(0.35),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: colorScheme.outline.withOpacity(0.1),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                _mediaIconForItem(media),
+                color: colorScheme.primary,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      displayName,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _mediaMetadata(media),
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          if (!hasFilePath)
+            Text(
+              'File path unavailable.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.error,
+                  ),
+            )
+          else if (isImage) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: Image.network(
+                url,
+                height: 180,
+                width: double.infinity,
+                fit: BoxFit.cover,
+                loadingBuilder: (context, child, loadingProgress) {
+                  if (loadingProgress == null) {
+                    return child;
+                  }
+                  return Container(
+                    height: 180,
+                    alignment: Alignment.center,
+                    color: colorScheme.surface,
+                    child: const CircularProgressIndicator(),
+                  );
+                },
+                errorBuilder: (context, error, stackTrace) {
+                  return Container(
+                    height: 120,
+                    alignment: Alignment.center,
+                    color: colorScheme.surface,
+                    child: Text(
+                      'Preview unavailable. Tap Open to view this file.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerRight,
+              child: TextButton.icon(
+                onPressed: () => _openUploadedFile(filePath),
+                icon: const Icon(Icons.open_in_new_outlined, size: 18),
+                label: const Text('Open'),
+              ),
+            ),
+          ] else
+            Align(
+              alignment: Alignment.centerRight,
+              child: OutlinedButton.icon(
+                onPressed: () => _openUploadedFile(filePath),
+                icon: const Icon(Icons.open_in_new_outlined, size: 18),
+                label: const Text('Open'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showLeaseContractSheet(
+    LeaseModel lease,
+    Map<String, dynamic> contract,
+  ) {
+    final contractNumber =
+        _textFrom(contract['contract_number']) ?? 'Not available';
+    final contractBody = _textFrom(contract['contract_body']) ??
+        'No contract body was returned.';
+
+    return showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        final colorScheme = Theme.of(sheetContext).colorScheme;
+
+        return FractionallySizedBox(
+          heightFactor: 0.9,
+          child: SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.description_outlined,
+                        color: colorScheme.primary,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Generated Contract',
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .titleMedium
+                              ?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: 'Close',
+                        onPressed: () => Navigator.of(sheetContext).pop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      _buildContractInfoTile(
+                        sheetContext,
+                        label: 'Contract Number',
+                        value: contractNumber,
+                      ),
+                      _buildContractInfoTile(
+                        sheetContext,
+                        label: 'Price per sqm',
+                        value: _formatContractPrice(
+                          contract['price_per_sqm'],
+                          suffix: ' / sqm',
+                        ),
+                      ),
+                      _buildContractInfoTile(
+                        sheetContext,
+                        label: 'Total Lease Price',
+                        value: _formatContractPrice(
+                          contract['total_lease_price'],
+                        ),
+                      ),
+                      _buildContractInfoTile(
+                        sheetContext,
+                        label: 'Generated At',
+                        value: _formatGeneratedAt(contract['generated_at']),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    _displayText(lease.leaseTitle, 'Contract Body'),
+                    style:
+                        Theme.of(sheetContext).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerHighest
+                            .withOpacity(0.35),
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: colorScheme.outline.withOpacity(0.1),
+                        ),
+                      ),
+                      child: SingleChildScrollView(
+                        child: SelectableText(
+                          contractBody,
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
+                                height: 1.35,
+                              ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildContractInfoTile(
+    BuildContext context, {
+    required String label,
+    required String value,
+  }) {
+    return SizedBox(
+      width: 220,
+      child: _buildMetricTile(
+        context,
+        label: label,
+        value: value,
       ),
     );
   }
@@ -1020,6 +1653,27 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                   ),
                 ],
               ),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _buildLeaseActionButton(
+                  loading: _loadingMediaLeaseId == lease.id,
+                  icon: Icons.photo_library_outlined,
+                  label: 'View Media',
+                  loadingLabel: 'Loading Media...',
+                  onPressed: () => _viewLeaseMedia(lease),
+                ),
+                _buildLeaseActionButton(
+                  loading: _loadingContractLeaseId == lease.id,
+                  icon: Icons.description_outlined,
+                  label: 'View Generated Contract',
+                  loadingLabel: 'Loading Contract...',
+                  onPressed: () => _viewLeaseContract(lease),
+                ),
+              ],
             ),
           ],
         ),
