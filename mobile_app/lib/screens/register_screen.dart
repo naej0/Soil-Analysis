@@ -17,11 +17,17 @@ class RegisterScreen extends StatefulWidget {
 }
 
 class _RegisterScreenState extends State<RegisterScreen> {
+  static const Map<String, String> _accountTypeOptions = {
+    'farmer': 'Farmer / Landowner',
+    'renter': 'Renter / Client',
+  };
+
   final _formKey = GlobalKey<FormState>();
   final _fullNameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmPasswordController = TextEditingController();
+  String? _selectedUserCategory;
   bool _isLoading = false;
 
   @override
@@ -47,6 +53,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
         fullName: _fullNameController.text.trim(),
         email: _emailController.text.trim(),
         password: _passwordController.text,
+        userCategory: _selectedUserCategory!,
       );
 
       if (!mounted) {
@@ -54,7 +61,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       }
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Registration successful. You can now log in.')),
+        const SnackBar(
+            content: Text('Registration successful. You can now log in.')),
       );
       Navigator.of(context).pop(true);
     } on ApiException catch (error) {
@@ -147,6 +155,46 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     }
                     return null;
                   },
+                ),
+                const SizedBox(height: 16),
+                DropdownButtonFormField<String>(
+                  initialValue: _selectedUserCategory,
+                  decoration: InputDecoration(
+                    labelText: 'Account Type',
+                    filled: true,
+                    fillColor: Theme.of(context)
+                        .colorScheme
+                        .surfaceContainerHighest
+                        .withOpacity(0.25),
+                    prefixIcon: Icon(
+                      Icons.badge_outlined,
+                      color: Theme.of(context).colorScheme.onSurfaceVariant,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                  items: _accountTypeOptions.entries
+                      .map(
+                        (entry) => DropdownMenuItem<String>(
+                          value: entry.key,
+                          child: Text(entry.value),
+                        ),
+                      )
+                      .toList(),
+                  validator: (value) {
+                    if (value == null || value.trim().isEmpty) {
+                      return 'Select an account type';
+                    }
+                    return null;
+                  },
+                  onChanged: _isLoading
+                      ? null
+                      : (value) {
+                          setState(() {
+                            _selectedUserCategory = value;
+                          });
+                        },
                 ),
                 const SizedBox(height: 24),
                 CustomButton(

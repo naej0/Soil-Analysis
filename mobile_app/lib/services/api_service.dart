@@ -77,6 +77,7 @@ class ApiService {
     required String fullName,
     required String email,
     required String password,
+    required String userCategory,
   }) async {
     final data = await _post(
       '/users/register',
@@ -84,6 +85,7 @@ class ApiService {
         'full_name': fullName,
         'email': email,
         'password': password,
+        'user_category': userCategory,
       },
     );
     return AuthResponse.fromJson(data);
@@ -363,6 +365,83 @@ class ApiService {
     return Map<String, dynamic>.from(data);
   }
 
+  Future<Map<String, dynamic>> createLeaseRentalRequest({
+    required int leaseId,
+    required int renterUserId,
+    required String renterName,
+    required String renterContact,
+    String? paymentDueDate,
+  }) async {
+    final data = await _postJson(
+      '/leases/$leaseId/rent',
+      body: {
+        'renter_user_id': renterUserId,
+        'renter_name': renterName,
+        'renter_contact': renterContact,
+        if (paymentDueDate != null && paymentDueDate.trim().isNotEmpty)
+          'payment_due_date': paymentDueDate,
+      },
+    );
+    return Map<String, dynamic>.from(data);
+  }
+
+  Future<List<Map<String, dynamic>>> getLeaseRentals(int leaseId) async {
+    final data = await _get('/leases/$leaseId/rentals');
+    return _mapList(
+      data['rental_requests'] ?? data['rentals'] ?? data['data'] ?? const [],
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> getAdminLeasePayments({
+    required int adminUserId,
+  }) async {
+    final data = await _get(
+      '/admin/lease-payments',
+      queryParameters: _adminQueryParameters(adminUserId),
+      headers: _adminHeaders(adminUserId),
+    );
+
+    return _mapList(
+      data['lease_payments'] ?? data['payments'] ?? data['data'] ?? const [],
+    );
+  }
+
+  Future<Map<String, dynamic>> updateLeaseRentalPayment({
+    required int rentalId,
+    required int adminUserId,
+    required String amountPaid,
+    required String paymentStatus,
+  }) async {
+    final data = await _patchJson(
+      '/admin/lease-rentals/$rentalId/payment',
+      queryParameters: _adminQueryParameters(adminUserId),
+      headers: _adminHeaders(adminUserId),
+      body: {
+        'amount_paid': amountPaid,
+        'payment_status': paymentStatus,
+      },
+    );
+    return Map<String, dynamic>.from(data);
+  }
+
+  Future<Map<String, dynamic>> updateLeaseRentalStatus({
+    required int rentalId,
+    required int adminUserId,
+    required String rentalStatus,
+    int? approvedBy,
+  }) async {
+    final data = await _patchJson(
+      '/admin/lease-rentals/$rentalId/status',
+      queryParameters: _adminQueryParameters(adminUserId),
+      headers: _adminHeaders(adminUserId),
+      body: {
+        'rental_status': rentalStatus,
+        if (approvedBy != null) 'approved_by': approvedBy,
+      },
+    );
+    return Map<String, dynamic>.from(data);
+  }
+
   String buildUploadedFileUrl(String filePath) {
     final trimmedPath = filePath.trim();
     if (trimmedPath.isEmpty) {
@@ -617,6 +696,32 @@ class ApiService {
         headers: {
           'Accept': 'application/json',
           'Content-Type': 'application/json',
+        },
+        body: jsonEncode(body),
+      );
+      return _decodeResponse(response);
+    } on SocketException {
+      throw ApiException('Could not connect to backend at $_baseUrl');
+    } on http.ClientException {
+      throw const ApiException(
+        'Network request failed while contacting the backend.',
+      );
+    }
+  }
+
+  Future<Map<String, dynamic>> _patchJson(
+    String path, {
+    required Map<String, dynamic> body,
+    Map<String, dynamic>? queryParameters,
+    Map<String, String>? headers,
+  }) async {
+    try {
+      final response = await _client.patch(
+        _buildUri(path, queryParameters),
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          if (headers != null) ...headers,
         },
         body: jsonEncode(body),
       );

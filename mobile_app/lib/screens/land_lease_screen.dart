@@ -8,6 +8,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../config/api_config.dart';
 import '../models/lease_model.dart';
+import '../models/user_model.dart';
 import '../services/api_service.dart';
 import '../widgets/custom_text_field.dart';
 import '../widgets/info_card.dart';
@@ -16,9 +17,11 @@ class LandLeaseScreen extends StatefulWidget {
   const LandLeaseScreen({
     super.key,
     required this.apiService,
+    required this.currentUser,
   });
 
   final ApiService apiService;
+  final UserModel currentUser;
 
   @override
   State<LandLeaseScreen> createState() => _LandLeaseScreenState();
@@ -77,6 +80,26 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
   List<LeaseModel> _leases = const [];
   String? _leasesMessage;
   bool _leasesMessageIsError = false;
+
+  String get _normalizedRole =>
+      (widget.currentUser.role ?? '').trim().toLowerCase();
+
+  String get _normalizedUserCategory =>
+      (widget.currentUser.userCategory ?? '').trim().toLowerCase();
+
+  bool get isAdmin =>
+      _normalizedRole == 'admin' || _normalizedUserCategory == 'admin';
+
+  bool get isFarmer =>
+      _normalizedUserCategory == 'farmer' ||
+      (_normalizedUserCategory.isEmpty && _normalizedRole == 'farmer');
+
+  bool get isRenter =>
+      _normalizedUserCategory == 'renter' ||
+      (_normalizedUserCategory.isEmpty &&
+          (_normalizedRole == 'renter' || _normalizedRole == 'client'));
+
+  bool get _canCreateLease => isAdmin || isFarmer;
 
   @override
   void initState() {
@@ -392,11 +415,205 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
       }
     }
 
+    // ignore: unnecessary_null_comparison
     if (!mounted || contract == null) {
       return;
     }
 
     await _showLeaseContractSheet(lease, contract);
+  }
+
+  Future<void> _showRentRequestSheet(LeaseModel lease) async {
+    final formKey = GlobalKey<FormState>();
+    final renterNameController = TextEditingController();
+    final renterContactController = TextEditingController();
+    final paymentDueDateController = TextEditingController();
+    DateTime? paymentDueDate;
+    var submitting = false;
+
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (sheetContext) {
+        return StatefulBuilder(
+          builder: (sheetContext, setSheetState) {
+            Future<void> pickPaymentDueDate() async {
+              final now = DateTime.now();
+              final pickedDate = await showDatePicker(
+                context: sheetContext,
+                initialDate: paymentDueDate ?? now,
+                firstDate: now,
+                lastDate: DateTime(now.year + 20, 12, 31),
+              );
+
+              if (pickedDate == null) {
+                return;
+              }
+
+              setSheetState(() {
+                paymentDueDate = pickedDate;
+                paymentDueDateController.text = _formatDateOnly(pickedDate);
+              });
+            }
+
+            Future<void> submitRequest() async {
+              if (!formKey.currentState!.validate()) {
+                return;
+              }
+
+              final selectedDueDate = paymentDueDate;
+              if (selectedDueDate == null) {
+                _showMessage('Select the payment due date.');
+                return;
+              }
+
+              setSheetState(() {
+                submitting = true;
+              });
+
+              try {
+                await widget.apiService.createLeaseRentalRequest(
+                  leaseId: lease.id,
+                  renterUserId: widget.currentUser.id,
+                  renterName: renterNameController.text.trim(),
+                  renterContact: renterContactController.text.trim(),
+                  paymentDueDate: _formatDateForQuery(selectedDueDate),
+                );
+
+                if (!mounted) {
+                  return;
+                }
+
+                Navigator.of(context).pop();
+                _showMessage('Lease rental request submitted successfully.');
+              } on ApiException catch (error) {
+                if (!mounted) {
+                  return;
+                }
+                _showMessage(error.message);
+                setSheetState(() {
+                  submitting = false;
+                });
+              }
+            }
+
+            return Padding(
+              padding: EdgeInsets.only(
+                bottom: MediaQuery.of(sheetContext).viewInsets.bottom,
+              ),
+              child: SafeArea(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
+                  child: Form(
+                    key: formKey,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.assignment_turned_in_outlined,
+                              color: Theme.of(sheetContext).colorScheme.primary,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Request to Rent',
+                                style: Theme.of(sheetContext)
+                                    .textTheme
+                                    .titleMedium
+                                    ?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Close',
+                              onPressed: submitting
+                                  ? null
+                                  : () => Navigator.of(sheetContext).pop(),
+                              icon: const Icon(Icons.close),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          _displayText(lease.leaseTitle, lease.ownerName),
+                          style: Theme.of(sheetContext)
+                              .textTheme
+                              .bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(sheetContext)
+                                    .colorScheme
+                                    .onSurfaceVariant,
+                              ),
+                        ),
+                        const SizedBox(height: 16),
+                        CustomTextField(
+                          controller: renterNameController,
+                          label: 'Renter Name',
+                          prefixIcon: Icons.person_outline,
+                          validator: (value) => _validateRequiredText(
+                            value,
+                            'Enter the renter name.',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        CustomTextField(
+                          controller: renterContactController,
+                          label: 'Renter Contact',
+                          prefixIcon: Icons.phone_outlined,
+                          keyboardType: TextInputType.phone,
+                          validator: (value) => _validateRequiredText(
+                            value,
+                            'Enter the renter contact number.',
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: paymentDueDateController,
+                          readOnly: true,
+                          onTap: submitting ? null : pickPaymentDueDate,
+                          validator: (value) => _validateRequiredText(
+                            value,
+                            'Select the payment due date.',
+                          ),
+                          decoration: _buildDropdownDecoration(
+                            sheetContext,
+                            label: 'Payment Due Date',
+                            icon: Icons.event_available_outlined,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton.icon(
+                            onPressed: submitting ? null : submitRequest,
+                            icon: submitting
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.send_outlined, size: 18),
+                            label: Text(
+                              submitting
+                                  ? 'Submitting Request...'
+                                  : 'Submit Request',
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
   }
 
   List<Map<String, dynamic>> _extractLeaseMedia(Map<String, dynamic> data) {
@@ -1673,6 +1890,14 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                   loadingLabel: 'Loading Contract...',
                   onPressed: () => _viewLeaseContract(lease),
                 ),
+                if (isRenter)
+                  _buildLeaseActionButton(
+                    loading: false,
+                    icon: Icons.assignment_turned_in_outlined,
+                    label: 'Request to Rent',
+                    loadingLabel: 'Opening Request...',
+                    onPressed: () => _showRentRequestSheet(lease),
+                  ),
               ],
             ),
           ],
@@ -1741,223 +1966,227 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                   ],
                 ),
               ),
-              InfoCard(
-                title: 'Create Lease Listing',
-                icon: Icons.add_business_outlined,
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Add lease details, rental duration, land area, and optional media for farmers to review.',
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: Theme.of(context)
-                                  .colorScheme
-                                  .onSurfaceVariant,
-                            ),
-                      ),
-                      const SizedBox(height: 16),
-                      _buildFormGroup(
-                        context,
-                        title: 'Listing Details',
-                        description:
-                            'Name the lease and set when the rental period begins.',
-                        children: [
-                          CustomTextField(
-                            controller: _titleController,
-                            label: 'Lease Title',
-                            prefixIcon: Icons.title_outlined,
-                            validator: (value) => _validateRequiredText(
-                              value,
-                              'Enter the lease title.',
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          _buildDateField(context),
-                          const SizedBox(height: 12),
-                          CustomTextField(
-                            controller: _durationController,
-                            label: 'Duration Value',
-                            prefixIcon: Icons.timelapse_outlined,
-                            keyboardType: TextInputType.number,
-                            validator: (value) =>
-                                _validateRequiredPositiveNumber(
-                              value,
-                              'Enter the lease duration.',
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          DropdownButtonFormField<String>(
-                            initialValue: _selectedDurationUnit,
-                            decoration: _buildDropdownDecoration(
-                              context,
-                              label: 'Duration Unit',
-                              icon: Icons.calendar_view_month_outlined,
-                            ),
-                            items: _durationUnits
-                                .map(
-                                  (unit) => DropdownMenuItem(
-                                    value: unit,
-                                    child: Text(unit),
+              if (_canCreateLease)
+                InfoCard(
+                  title: 'Create Lease Listing',
+                  icon: Icons.add_business_outlined,
+                  child: Form(
+                    key: _formKey,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Add lease details, rental duration, land area, and optional media for farmers to review.',
+                          style:
+                              Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                    color: Theme.of(context)
+                                        .colorScheme
+                                        .onSurfaceVariant,
                                   ),
-                                )
-                                .toList(),
-                            onChanged: _submitting
-                                ? null
-                                : (value) {
-                                    if (value != null) {
-                                      setState(() {
-                                        _selectedDurationUnit = value;
-                                      });
-                                    }
-                                  },
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      _buildFormGroup(
-                        context,
-                        title: 'Owner / Contact Details',
-                        description:
-                            'Enter the land owner name and the best phone number for inquiries.',
-                        children: [
-                          CustomTextField(
-                            controller: _ownerController,
-                            label: 'Owner Name',
-                            prefixIcon: Icons.person_outline,
-                            validator: (value) => _validateRequiredText(
-                              value,
-                              'Enter the owner name.',
+                        ),
+                        const SizedBox(height: 16),
+                        _buildFormGroup(
+                          context,
+                          title: 'Listing Details',
+                          description:
+                              'Name the lease and set when the rental period begins.',
+                          children: [
+                            CustomTextField(
+                              controller: _titleController,
+                              label: 'Lease Title',
+                              prefixIcon: Icons.title_outlined,
+                              validator: (value) => _validateRequiredText(
+                                value,
+                                'Enter the lease title.',
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 12),
-                          CustomTextField(
-                            controller: _contactController,
-                            label: 'Contact Number',
-                            prefixIcon: Icons.phone_outlined,
-                            keyboardType: TextInputType.phone,
-                            validator: (value) => _validateRequiredText(
-                              value,
-                              'Enter the contact number.',
+                            const SizedBox(height: 12),
+                            _buildDateField(context),
+                            const SizedBox(height: 12),
+                            CustomTextField(
+                              controller: _durationController,
+                              label: 'Duration Value',
+                              prefixIcon: Icons.timelapse_outlined,
+                              keyboardType: TextInputType.number,
+                              validator: (value) =>
+                                  _validateRequiredPositiveNumber(
+                                value,
+                                'Enter the lease duration.',
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      _buildFormGroup(
-                        context,
-                        title: 'Land Details',
-                        description:
-                            'Highlight the barangay, soil type, land area, and field location.',
-                        children: [
-                          CustomTextField(
-                            controller: _barangayController,
-                            label: 'Barangay',
-                            prefixIcon: Icons.place_outlined,
-                            validator: (value) => _validateRequiredText(
-                              value,
-                              'Enter the barangay.',
+                            const SizedBox(height: 12),
+                            DropdownButtonFormField<String>(
+                              initialValue: _selectedDurationUnit,
+                              decoration: _buildDropdownDecoration(
+                                context,
+                                label: 'Duration Unit',
+                                icon: Icons.calendar_view_month_outlined,
+                              ),
+                              items: _durationUnits
+                                  .map(
+                                    (unit) => DropdownMenuItem(
+                                      value: unit,
+                                      child: Text(unit),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: _submitting
+                                  ? null
+                                  : (value) {
+                                      if (value != null) {
+                                        setState(() {
+                                          _selectedDurationUnit = value;
+                                        });
+                                      }
+                                    },
                             ),
-                          ),
-                          const SizedBox(height: 12),
-                          DropdownButtonFormField<String>(
-                            initialValue: _selectedSoilType,
-                            decoration: _buildDropdownDecoration(
-                              context,
-                              label: 'Soil Type',
-                              icon: Icons.terrain_outlined,
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        _buildFormGroup(
+                          context,
+                          title: 'Owner / Contact Details',
+                          description:
+                              'Enter the land owner name and the best phone number for inquiries.',
+                          children: [
+                            CustomTextField(
+                              controller: _ownerController,
+                              label: 'Owner Name',
+                              prefixIcon: Icons.person_outline,
+                              validator: (value) => _validateRequiredText(
+                                value,
+                                'Enter the owner name.',
+                              ),
                             ),
-                            items: ApiConfig.supportedSoilTypes
-                                .map(
-                                  (soilType) => DropdownMenuItem(
-                                    value: soilType,
-                                    child: Text(soilType),
-                                  ),
-                                )
-                                .toList(),
-                            onChanged: _submitting
-                                ? null
-                                : (value) {
-                                    if (value != null) {
-                                      setState(() {
-                                        _selectedSoilType = value;
-                                      });
-                                    }
-                                  },
-                          ),
-                          const SizedBox(height: 12),
-                          CustomTextField(
-                            controller: _areaSqmController,
-                            label: 'Area (sqm)',
-                            prefixIcon: Icons.straighten_outlined,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
+                            const SizedBox(height: 12),
+                            CustomTextField(
+                              controller: _contactController,
+                              label: 'Contact Number',
+                              prefixIcon: Icons.phone_outlined,
+                              keyboardType: TextInputType.phone,
+                              validator: (value) => _validateRequiredText(
+                                value,
+                                'Enter the contact number.',
+                              ),
                             ),
-                            validator: (value) =>
-                                _validateRequiredPositiveNumber(
-                              value,
-                              'Enter the land area in square meters.',
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        _buildFormGroup(
+                          context,
+                          title: 'Land Details',
+                          description:
+                              'Highlight the barangay, soil type, land area, and field location.',
+                          children: [
+                            CustomTextField(
+                              controller: _barangayController,
+                              label: 'Barangay',
+                              prefixIcon: Icons.place_outlined,
+                              validator: (value) => _validateRequiredText(
+                                value,
+                                'Enter the barangay.',
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 12),
-                          CustomTextField(
-                            controller: _locationController,
-                            label: 'Location Description',
-                            prefixIcon: Icons.map_outlined,
-                            maxLines: 2,
-                            validator: (value) => _validateRequiredText(
-                              value,
-                              'Enter the location description.',
+                            const SizedBox(height: 12),
+                            DropdownButtonFormField<String>(
+                              initialValue: _selectedSoilType,
+                              decoration: _buildDropdownDecoration(
+                                context,
+                                label: 'Soil Type',
+                                icon: Icons.terrain_outlined,
+                              ),
+                              items: ApiConfig.supportedSoilTypes
+                                  .map(
+                                    (soilType) => DropdownMenuItem(
+                                      value: soilType,
+                                      child: Text(soilType),
+                                    ),
+                                  )
+                                  .toList(),
+                              onChanged: _submitting
+                                  ? null
+                                  : (value) {
+                                      if (value != null) {
+                                        setState(() {
+                                          _selectedSoilType = value;
+                                        });
+                                      }
+                                    },
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      _buildFormGroup(
-                        context,
-                        title: 'Pricing / Description',
-                        description:
-                            'Price is optional because the backend can compute price using soil type and square meters.',
-                        children: [
-                          CustomTextField(
-                            controller: _priceController,
-                            label: 'Lease Price (Optional)',
-                            prefixIcon: Icons.payments_outlined,
-                            keyboardType: const TextInputType.numberWithOptions(
-                              decimal: true,
+                            const SizedBox(height: 12),
+                            CustomTextField(
+                              controller: _areaSqmController,
+                              label: 'Area (sqm)',
+                              prefixIcon: Icons.straighten_outlined,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                decimal: true,
+                              ),
+                              validator: (value) =>
+                                  _validateRequiredPositiveNumber(
+                                value,
+                                'Enter the land area in square meters.',
+                              ),
                             ),
-                            validator: _validateOptionalPositiveNumber,
-                          ),
-                          const SizedBox(height: 12),
-                          CustomTextField(
-                            controller: _descriptionController,
-                            label: 'Lease Description',
-                            prefixIcon: Icons.notes_outlined,
-                            maxLines: 3,
-                            validator: (value) => _validateRequiredText(
-                              value,
-                              'Add a lease description.',
+                            const SizedBox(height: 12),
+                            CustomTextField(
+                              controller: _locationController,
+                              label: 'Location Description',
+                              prefixIcon: Icons.map_outlined,
+                              maxLines: 2,
+                              validator: (value) => _validateRequiredText(
+                                value,
+                                'Enter the location description.',
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 14),
-                      _buildFormGroup(
-                        context,
-                        title: 'Media Uploads',
-                        description:
-                            'Optional: attach photos, videos, shapefile parts, or zipped shapefiles.',
-                        children: [
-                          _buildMediaPicker(context),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      _buildSubmitButton(context),
-                    ],
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        _buildFormGroup(
+                          context,
+                          title: 'Pricing / Description',
+                          description:
+                              'Price is optional because the backend can compute price using soil type and square meters.',
+                          children: [
+                            CustomTextField(
+                              controller: _priceController,
+                              label: 'Lease Price (Optional)',
+                              prefixIcon: Icons.payments_outlined,
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                decimal: true,
+                              ),
+                              validator: _validateOptionalPositiveNumber,
+                            ),
+                            const SizedBox(height: 12),
+                            CustomTextField(
+                              controller: _descriptionController,
+                              label: 'Lease Description',
+                              prefixIcon: Icons.notes_outlined,
+                              maxLines: 3,
+                              validator: (value) => _validateRequiredText(
+                                value,
+                                'Add a lease description.',
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        _buildFormGroup(
+                          context,
+                          title: 'Media Uploads',
+                          description:
+                              'Optional: attach photos, videos, shapefile parts, or zipped shapefiles.',
+                          children: [
+                            _buildMediaPicker(context),
+                          ],
+                        ),
+                        const SizedBox(height: 16),
+                        _buildSubmitButton(context),
+                      ],
+                    ),
                   ),
                 ),
-              ),
               InfoCard(
                 title: 'Available Lease Listings',
                 icon: Icons.storefront_outlined,

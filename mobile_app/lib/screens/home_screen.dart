@@ -28,7 +28,8 @@ class HomeScreen extends StatelessWidget {
     final modules = <_ModuleEntry>[
       _ModuleEntry(
         title: 'Soil Analysis',
-        subtitle: 'Identify soil type from a soil photo and review field guidance.',
+        subtitle:
+            'Identify soil type from a soil photo and review field guidance.',
         icon: Icons.photo_camera_back_outlined,
         onTap: () {
           Navigator.of(context).push(
@@ -40,7 +41,8 @@ class HomeScreen extends StatelessWidget {
       ),
       _ModuleEntry(
         title: 'GIS Mapping',
-        subtitle: 'View soil zones, location details, and crop guidance on the map.',
+        subtitle:
+            'View soil zones, location details, and crop guidance on the map.',
         icon: Icons.map_outlined,
         onTap: () {
           Navigator.of(context).push(
@@ -52,7 +54,8 @@ class HomeScreen extends StatelessWidget {
       ),
       _ModuleEntry(
         title: 'Climate Advisory',
-        subtitle: 'Check today\'s planting conditions and field weather for your area.',
+        subtitle:
+            'Check today\'s planting conditions and field weather for your area.',
         icon: Icons.cloud_outlined,
         onTap: () {
           Navigator.of(context).push(
@@ -69,7 +72,10 @@ class HomeScreen extends StatelessWidget {
         onTap: () {
           Navigator.of(context).push(
             MaterialPageRoute(
-              builder: (_) => LandLeaseScreen(apiService: apiService),
+              builder: (_) => LandLeaseScreen(
+                apiService: apiService,
+                currentUser: currentUser,
+              ),
             ),
           );
         },
@@ -92,7 +98,8 @@ class HomeScreen extends StatelessWidget {
       if (isAdmin)
         _ModuleEntry(
           title: 'Admin Dashboard',
-          subtitle: 'Open admin tools while keeping access to the normal farm modules.',
+          subtitle:
+              'Open admin tools while keeping access to the normal farm modules.',
           icon: Icons.admin_panel_settings_outlined,
           onTap: () {
             Navigator.of(context).push(
@@ -143,7 +150,8 @@ class HomeScreen extends StatelessWidget {
                     Text(
                       'Open a module below to check soil, planting conditions, lease listings, and farm productivity.',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            color:
+                                Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
                     ),
                   ],

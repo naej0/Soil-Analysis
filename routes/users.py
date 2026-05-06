@@ -20,11 +20,17 @@ def register(
     full_name: str | None = Query(None),
     email: str | None = Query(None),
     password: str | None = Query(None),
+    user_category: str | None = Query(None),
 ):
     if payload is None:
-        if not all([full_name, email, password]):
+        if not all([full_name, email, password, user_category]):
             raise HTTPException(status_code=422, detail="Provide JSON body or query parameters")
-        payload = UserRegisterRequest(full_name=full_name, email=email, password=password)
+        payload = UserRegisterRequest(
+            full_name=full_name,
+            email=email,
+            password=password,
+            user_category=user_category,
+        )
     user = register_user(payload)
     return {"message": "User registered successfully", "user": user}
 

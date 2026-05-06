@@ -19,6 +19,8 @@ def verify_password(plain_password: str, stored_password: str) -> bool:
 
 
 def register_user(payload) -> dict:
+    user_category = (payload.user_category or "").strip().lower()
+
     with get_cursor() as (_, cursor):
         cursor.execute("SELECT id FROM users WHERE email = %s;", (payload.email,))
         existing_user = cursor.fetchone()
@@ -27,11 +29,17 @@ def register_user(payload) -> dict:
 
         cursor.execute(
             """
-            INSERT INTO users (full_name, email, password_hash)
-            VALUES (%s, %s, %s)
-            RETURNING id, full_name, email, role, created_at;
+            INSERT INTO users (full_name, email, password_hash, role, user_category)
+            VALUES (%s, %s, %s, %s, %s)
+            RETURNING id, full_name, email, role, user_category, created_at;
             """,
-            (payload.full_name, payload.email, hash_password(payload.password)),
+            (
+                payload.full_name,
+                payload.email,
+                hash_password(payload.password),
+                "user",
+                user_category,
+            ),
         )
         user = cursor.fetchone()
 
@@ -40,7 +48,8 @@ def register_user(payload) -> dict:
         "full_name": user[1],
         "email": user[2],
         "role": user[3],
-        "created_at": user[4],
+        "user_category": user[4],
+        "created_at": user[5],
     }
 
 
