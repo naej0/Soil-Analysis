@@ -399,14 +399,21 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
       _loadingContractLeaseId = lease.id;
     });
 
-    Map<String, dynamic>? contract;
+    final baseUrl = ApiConfig.baseUrl.endsWith('/')
+        ? ApiConfig.baseUrl.substring(0, ApiConfig.baseUrl.length - 1)
+        : ApiConfig.baseUrl;
+    final uri = Uri.parse('$baseUrl/leases/${lease.id}/contract/pdf');
+
     try {
-      contract = await widget.apiService.getLeaseContract(lease.id);
-    } on ApiException catch (error) {
-      if (mounted) {
-        _showMessage('Could not load generated contract: ${error.message}');
+      final opened = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) {
+        _showMessage('Could not open the generated contract PDF.');
       }
-      return;
+    } catch (_) {
+      _showMessage('Could not open the generated contract PDF.');
     } finally {
       if (mounted) {
         setState(() {
@@ -414,13 +421,6 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
         });
       }
     }
-
-    // ignore: unnecessary_null_comparison
-    if (!mounted || contract == null) {
-      return;
-    }
-
-    await _showLeaseContractSheet(lease, contract);
   }
 
   Future<void> _showRentRequestSheet(LeaseModel lease) async {
