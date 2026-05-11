@@ -423,6 +423,30 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     }
   }
 
+  Future<void> _openLeaseContractPdf(LeaseModel lease) async {
+    final baseUrl = ApiConfig.baseUrl.endsWith('/')
+        ? ApiConfig.baseUrl.substring(0, ApiConfig.baseUrl.length - 1)
+        : ApiConfig.baseUrl;
+    final uri = Uri.tryParse('$baseUrl/leases/${lease.id}/contract/pdf');
+
+    if (uri == null || !uri.hasScheme) {
+      _showMessage('Could not open the generated contract PDF.');
+      return;
+    }
+
+    try {
+      final opened = await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+      if (!opened) {
+        _showMessage('Could not open the generated contract PDF.');
+      }
+    } catch (_) {
+      _showMessage('Could not open the generated contract PDF.');
+    }
+  }
+
   Future<void> _showRentRequestSheet(LeaseModel lease) async {
     final formKey = GlobalKey<FormState>();
     final renterNameController = TextEditingController();
@@ -810,6 +834,18 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                         const SizedBox(height: 16),
                         buildPaymentSummaryCard(),
                         const SizedBox(height: 16),
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton.icon(
+                            onPressed: () => _openLeaseContractPdf(lease),
+                            icon: const Icon(
+                              Icons.description_outlined,
+                              size: 18,
+                            ),
+                            label: const Text('View Contract PDF'),
+                          ),
+                        ),
+                        const SizedBox(height: 12),
                         SizedBox(
                           width: double.infinity,
                           child: ElevatedButton.icon(
