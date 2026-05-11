@@ -1755,7 +1755,7 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                             ),
                         ],
                       ),
-                      if (isRenter) ...[
+                      if (!_canCreateLease) ...[
                         const SizedBox(height: 12),
                         SizedBox(
                           width: double.infinity,
