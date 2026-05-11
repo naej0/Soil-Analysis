@@ -491,6 +491,155 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
               });
             }
 
+            int? selectedRentalMonths() {
+              final startDate = rentalStartDate;
+              final endDate = rentalEndDate;
+              if (startDate == null ||
+                  endDate == null ||
+                  !endDate.isAfter(startDate)) {
+                return null;
+              }
+
+              final days = endDate.difference(startDate).inDays;
+              final months = (days / 30).ceil();
+              return months < 1 ? 1 : months;
+            }
+
+            String rentalPeriodText() {
+              final startDate = rentalStartDate;
+              final endDate = rentalEndDate;
+              if (startDate == null || endDate == null) {
+                return 'Select dates';
+              }
+
+              return '${_formatDateOnly(startDate)} to ${_formatDateOnly(endDate)}';
+            }
+
+            String rentalDurationText() {
+              final months = selectedRentalMonths();
+              if (months == null) {
+                return 'Not available';
+              }
+
+              if (months >= 12 && months % 12 == 0) {
+                final years = months ~/ 12;
+                return '$years ${years == 1 ? 'year' : 'years'}';
+              }
+
+              return '$months ${months == 1 ? 'month' : 'months'}';
+            }
+
+            String areaText() {
+              final areaSqm = lease.areaSqm;
+              if (areaSqm == null || areaSqm <= 0) {
+                return 'Not available';
+              }
+
+              return '${_formatNumber(areaSqm)} sqm';
+            }
+
+            String pricePerSqmText() {
+              final pricePerSqm = lease.pricePerSqm;
+              if (pricePerSqm == null || pricePerSqm <= 0) {
+                return 'Not available';
+              }
+
+              return '${_formatPrice(pricePerSqm)} / sqm';
+            }
+
+            String estimatedTotalText() {
+              final areaSqm = lease.areaSqm;
+              final pricePerSqm = lease.pricePerSqm;
+              final months = selectedRentalMonths();
+              if (areaSqm == null ||
+                  areaSqm <= 0 ||
+                  pricePerSqm == null ||
+                  pricePerSqm <= 0 ||
+                  months == null) {
+                return 'Not available';
+              }
+
+              return _formatPrice(areaSqm * pricePerSqm * months);
+            }
+
+            Widget buildPaymentSummaryRow(
+              String label,
+              String value, {
+              bool highlight = false,
+            }) {
+              final colorScheme = Theme.of(sheetContext).colorScheme;
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Text(
+                      label,
+                      style: Theme.of(sheetContext).textTheme.bodySmall
+                          ?.copyWith(color: colorScheme.onSurfaceVariant),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Flexible(
+                    child: Text(
+                      value,
+                      textAlign: TextAlign.end,
+                      style: Theme.of(sheetContext).textTheme.bodySmall
+                          ?.copyWith(
+                            fontWeight:
+                                highlight ? FontWeight.w800 : FontWeight.w600,
+                            color: highlight ? colorScheme.primary : null,
+                          ),
+                    ),
+                  ),
+                ],
+              );
+            }
+
+            Widget buildPaymentSummaryCard() {
+              final colorScheme = Theme.of(sheetContext).colorScheme;
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest.withOpacity(0.35),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: colorScheme.outline.withOpacity(0.18),
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Payment Summary',
+                      style: Theme.of(sheetContext).textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 10),
+                    buildPaymentSummaryRow(
+                      'Rental Period',
+                      rentalPeriodText(),
+                    ),
+                    const SizedBox(height: 6),
+                    buildPaymentSummaryRow('Duration', rentalDurationText()),
+                    const SizedBox(height: 6),
+                    buildPaymentSummaryRow('Area', areaText()),
+                    const SizedBox(height: 6),
+                    buildPaymentSummaryRow(
+                      'Price per sqm',
+                      pricePerSqmText(),
+                    ),
+                    const SizedBox(height: 8),
+                    buildPaymentSummaryRow(
+                      'Estimated Total Amount',
+                      estimatedTotalText(),
+                      highlight: true,
+                    ),
+                  ],
+                ),
+              );
+            }
+
             Future<void> submitRequest() async {
               if (!formKey.currentState!.validate()) {
                 return;
@@ -508,7 +657,7 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
               }
               if (!selectedEndDate.isAfter(selectedStartDate)) {
                 _showMessage(
-                  'Rental end date must be after rental start date.',
+                  'Rental end date must be after the start date.',
                 );
                 return;
               }
@@ -635,16 +784,31 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                           controller: rentalEndDateController,
                           readOnly: true,
                           onTap: submitting ? null : pickRentalEndDate,
-                          validator: (value) => _validateRequiredText(
-                            value,
-                            'Select the rental end date.',
-                          ),
+                          validator: (value) {
+                            final requiredError = _validateRequiredText(
+                              value,
+                              'Select the rental end date.',
+                            );
+                            if (requiredError != null) {
+                              return requiredError;
+                            }
+                            final startDate = rentalStartDate;
+                            final endDate = rentalEndDate;
+                            if (startDate != null &&
+                                endDate != null &&
+                                !endDate.isAfter(startDate)) {
+                              return 'Rental end date must be after the start date.';
+                            }
+                            return null;
+                          },
                           decoration: _buildDropdownDecoration(
                             sheetContext,
                             label: 'Rental End Date',
                             icon: Icons.event_available_outlined,
                           ),
                         ),
+                        const SizedBox(height: 16),
+                        buildPaymentSummaryCard(),
                         const SizedBox(height: 16),
                         SizedBox(
                           width: double.infinity,
