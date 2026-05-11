@@ -1755,20 +1755,6 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                             ),
                         ],
                       ),
-                      if (!_canCreateLease) ...[
-                        const SizedBox(height: 12),
-                        SizedBox(
-                          width: double.infinity,
-                          child: ElevatedButton.icon(
-                            onPressed: () => _showRentRequestSheet(lease),
-                            icon: const Icon(
-                              Icons.assignment_turned_in_outlined,
-                              size: 18,
-                            ),
-                            label: const Text('Request to Rent This Land'),
-                          ),
-                        ),
-                      ],
                     ],
                   ),
                 ),
@@ -1890,6 +1876,14 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
               spacing: 8,
               runSpacing: 8,
               children: [
+                if (!_canCreateLease)
+                  _buildLeaseActionButton(
+                    loading: false,
+                    icon: Icons.assignment_turned_in_outlined,
+                    label: 'Rent This Land',
+                    loadingLabel: 'Opening...',
+                    onPressed: () => _showRentRequestSheet(lease),
+                  ),
                 _buildLeaseActionButton(
                   loading: _loadingMediaLeaseId == lease.id,
                   icon: Icons.photo_library_outlined,
