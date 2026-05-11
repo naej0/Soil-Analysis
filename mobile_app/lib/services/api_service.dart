@@ -370,7 +370,8 @@ class ApiService {
     required int renterUserId,
     required String renterName,
     required String renterContact,
-    String? paymentDueDate,
+    required String rentalStartDate,
+    required String rentalEndDate,
   }) async {
     final data = await _postJson(
       '/leases/$leaseId/rent',
@@ -378,8 +379,8 @@ class ApiService {
         'renter_user_id': renterUserId,
         'renter_name': renterName,
         'renter_contact': renterContact,
-        if (paymentDueDate != null && paymentDueDate.trim().isNotEmpty)
-          'payment_due_date': paymentDueDate,
+        'rental_start_date': rentalStartDate,
+        'rental_end_date': rentalEndDate,
       },
     );
     return Map<String, dynamic>.from(data);

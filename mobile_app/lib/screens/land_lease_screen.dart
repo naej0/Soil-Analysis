@@ -427,8 +427,10 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
     final formKey = GlobalKey<FormState>();
     final renterNameController = TextEditingController();
     final renterContactController = TextEditingController();
-    final paymentDueDateController = TextEditingController();
-    DateTime? paymentDueDate;
+    final rentalStartDateController = TextEditingController();
+    final rentalEndDateController = TextEditingController();
+    DateTime? rentalStartDate;
+    DateTime? rentalEndDate;
     var submitting = false;
 
     await showModalBottomSheet<void>(
@@ -437,12 +439,13 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
       builder: (sheetContext) {
         return StatefulBuilder(
           builder: (sheetContext, setSheetState) {
-            Future<void> pickPaymentDueDate() async {
+            Future<void> pickRentalStartDate() async {
               final now = DateTime.now();
+              final today = DateTime(now.year, now.month, now.day);
               final pickedDate = await showDatePicker(
                 context: sheetContext,
-                initialDate: paymentDueDate ?? now,
-                firstDate: now,
+                initialDate: rentalStartDate ?? today,
+                firstDate: today,
                 lastDate: DateTime(now.year + 20, 12, 31),
               );
 
@@ -451,8 +454,40 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
               }
 
               setSheetState(() {
-                paymentDueDate = pickedDate;
-                paymentDueDateController.text = _formatDateOnly(pickedDate);
+                rentalStartDate = pickedDate;
+                rentalStartDateController.text = _formatDateOnly(pickedDate);
+                if (rentalEndDate != null &&
+                    !rentalEndDate!.isAfter(pickedDate)) {
+                  rentalEndDate = null;
+                  rentalEndDateController.clear();
+                }
+              });
+            }
+
+            Future<void> pickRentalEndDate() async {
+              final now = DateTime.now();
+              final today = DateTime(now.year, now.month, now.day);
+              final firstEndDate = rentalStartDate == null
+                  ? today
+                  : rentalStartDate!.add(const Duration(days: 1));
+              final initialDate = rentalEndDate != null &&
+                      !rentalEndDate!.isBefore(firstEndDate)
+                  ? rentalEndDate!
+                  : firstEndDate;
+              final pickedDate = await showDatePicker(
+                context: sheetContext,
+                initialDate: initialDate,
+                firstDate: firstEndDate,
+                lastDate: DateTime(now.year + 20, 12, 31),
+              );
+
+              if (pickedDate == null) {
+                return;
+              }
+
+              setSheetState(() {
+                rentalEndDate = pickedDate;
+                rentalEndDateController.text = _formatDateOnly(pickedDate);
               });
             }
 
@@ -461,9 +496,20 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                 return;
               }
 
-              final selectedDueDate = paymentDueDate;
-              if (selectedDueDate == null) {
-                _showMessage('Select the payment due date.');
+              final selectedStartDate = rentalStartDate;
+              final selectedEndDate = rentalEndDate;
+              if (selectedStartDate == null) {
+                _showMessage('Select the rental start date.');
+                return;
+              }
+              if (selectedEndDate == null) {
+                _showMessage('Select the rental end date.');
+                return;
+              }
+              if (!selectedEndDate.isAfter(selectedStartDate)) {
+                _showMessage(
+                  'Rental end date must be after rental start date.',
+                );
                 return;
               }
 
@@ -477,7 +523,8 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                   renterUserId: widget.currentUser.id,
                   renterName: renterNameController.text.trim(),
                   renterContact: renterContactController.text.trim(),
-                  paymentDueDate: _formatDateForQuery(selectedDueDate),
+                  rentalStartDate: _formatDateForQuery(selectedStartDate),
+                  rentalEndDate: _formatDateForQuery(selectedEndDate),
                 );
 
                 if (!mounted) {
@@ -570,16 +617,31 @@ class _LandLeaseScreenState extends State<LandLeaseScreen> {
                         ),
                         const SizedBox(height: 12),
                         TextFormField(
-                          controller: paymentDueDateController,
+                          controller: rentalStartDateController,
                           readOnly: true,
-                          onTap: submitting ? null : pickPaymentDueDate,
+                          onTap: submitting ? null : pickRentalStartDate,
                           validator: (value) => _validateRequiredText(
                             value,
-                            'Select the payment due date.',
+                            'Select the rental start date.',
                           ),
                           decoration: _buildDropdownDecoration(
                             sheetContext,
-                            label: 'Payment Due Date',
+                            label: 'Rental Start Date',
+                            icon: Icons.event_available_outlined,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        TextFormField(
+                          controller: rentalEndDateController,
+                          readOnly: true,
+                          onTap: submitting ? null : pickRentalEndDate,
+                          validator: (value) => _validateRequiredText(
+                            value,
+                            'Select the rental end date.',
+                          ),
+                          decoration: _buildDropdownDecoration(
+                            sheetContext,
+                            label: 'Rental End Date',
                             icon: Icons.event_available_outlined,
                           ),
                         ),

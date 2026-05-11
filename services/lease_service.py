@@ -57,6 +57,8 @@ LEASE_RENTAL_REQUEST_COLUMNS = [
     "total_amount",
     "amount_paid",
     "balance_amount",
+    "rental_start_date",
+    "rental_end_date",
     "payment_due_date",
     "requested_at",
     "approved_at",
@@ -370,6 +372,14 @@ def create_lease_rental_request(lease_id: int, payload) -> dict:
         balance_amount = total_amount
         renter_name = _optional_text(payload.renter_name) or renter_user.get("full_name")
         renter_contact = _optional_text(payload.renter_contact)
+        rental_start_date = payload.rental_start_date
+        rental_end_date = payload.rental_end_date
+
+        if rental_end_date <= rental_start_date:
+            raise HTTPException(
+                status_code=400,
+                detail="rental_end_date must be after rental_start_date.",
+            )
 
         cursor.execute(
             f"""
@@ -383,9 +393,11 @@ def create_lease_rental_request(lease_id: int, payload) -> dict:
                 total_amount,
                 amount_paid,
                 balance_amount,
+                rental_start_date,
+                rental_end_date,
                 payment_due_date
             )
-            VALUES (%s, %s, %s, %s, 'pending', 'unpaid', %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, 'pending', 'unpaid', %s, %s, %s, %s, %s, %s)
             RETURNING {', '.join(LEASE_RENTAL_REQUEST_COLUMNS)};
             """,
             (
@@ -396,6 +408,8 @@ def create_lease_rental_request(lease_id: int, payload) -> dict:
                 total_amount,
                 amount_paid,
                 balance_amount,
+                rental_start_date,
+                rental_end_date,
                 payload.payment_due_date,
             ),
         )
@@ -440,6 +454,8 @@ def get_admin_lease_payments() -> list[dict]:
                 rr.balance_amount,
                 rr.payment_status,
                 rr.rental_status,
+                rr.rental_start_date,
+                rr.rental_end_date,
                 rr.payment_due_date,
                 rr.requested_at,
                 rr.approved_at,
@@ -650,6 +666,8 @@ def _ensure_lease_schema(cursor) -> None:
             total_amount NUMERIC DEFAULT 0,
             amount_paid NUMERIC DEFAULT 0,
             balance_amount NUMERIC DEFAULT 0,
+            rental_start_date DATE,
+            rental_end_date DATE,
             payment_due_date DATE,
             requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             approved_at TIMESTAMP NULL,
@@ -667,6 +685,8 @@ def _ensure_lease_schema(cursor) -> None:
         ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS total_amount NUMERIC DEFAULT 0;
         ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS amount_paid NUMERIC DEFAULT 0;
         ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS balance_amount NUMERIC DEFAULT 0;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS rental_start_date DATE;
+        ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS rental_end_date DATE;
         ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS payment_due_date DATE;
         ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS requested_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
         ALTER TABLE lease_rental_requests ADD COLUMN IF NOT EXISTS approved_at TIMESTAMP NULL;
@@ -1372,6 +1392,8 @@ def _serialize_rental_request(rental_request: dict) -> dict:
         "total_amount": _to_float(rental_request.get("total_amount")),
         "amount_paid": _to_float(rental_request.get("amount_paid")),
         "balance_amount": _to_float(rental_request.get("balance_amount")),
+        "rental_start_date": rental_request.get("rental_start_date"),
+        "rental_end_date": rental_request.get("rental_end_date"),
         "payment_due_date": rental_request.get("payment_due_date"),
         "requested_at": rental_request.get("requested_at"),
         "approved_at": rental_request.get("approved_at"),
@@ -1395,6 +1417,8 @@ def _serialize_admin_lease_payment(row: dict) -> dict:
         "balance_amount": _to_float(row.get("balance_amount")),
         "payment_status": row.get("payment_status"),
         "rental_status": row.get("rental_status"),
+        "rental_start_date": row.get("rental_start_date"),
+        "rental_end_date": row.get("rental_end_date"),
         "payment_due_date": row.get("payment_due_date"),
         "requested_at": row.get("requested_at"),
         "approved_at": row.get("approved_at"),

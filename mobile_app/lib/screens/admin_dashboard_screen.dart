@@ -926,6 +926,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                 _formatMoney(payment['balance_amount']),
               ),
               _buildPaymentText(
+                'Start',
+                _formatDateValue(payment['rental_start_date']),
+              ),
+              _buildPaymentText(
+                'End',
+                _formatDateValue(payment['rental_end_date']),
+              ),
+              _buildPaymentText(
                 'Due',
                 _formatDateValue(payment['payment_due_date']),
               ),

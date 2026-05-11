@@ -24,6 +24,8 @@ class LeaseRentalRequestCreate(BaseModel):
     renter_user_id: int = Field(..., gt=0)
     renter_name: str | None = None
     renter_contact: str | None = None
+    rental_start_date: date
+    rental_end_date: date
     payment_due_date: date | None = None
 
 
